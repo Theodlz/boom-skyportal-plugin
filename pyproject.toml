@@ -1,0 +1,10 @@
+[project]
+name = "boom"
+version = "0.1.0"
+description = "A SkyPortal micro-service to ingest alerts from the boom broker"
+authors = [
+  { name = "Theophile du Laz", email = "theophile.dulaz@gmail.com" }
+]
+license = "MIT"
+readme = "README.md"
+dependencies = []
