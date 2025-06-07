@@ -42,6 +42,8 @@ log = make_log("boom")
 
 init_db(**cfg["database"])
 
+params = cfg.get("plugins.boom.params", {})
+
 thumbnail_types = [
     ("cutoutScience", "new"),
     ("cutoutTemplate", "ref"),
@@ -168,13 +170,13 @@ def main():
             log("Instrument ZTF not found in the database")
             return
         programid2streamid = make_programid2stream_mapper(session)
+
+    # TODO: validate params
     
     kafka_config = {
-        "bootstrap.servers": "192.168.4.40:9092",  # Kafka server and port
-        "group.id": "my_group",  # Consumer group ID
-        # # DEBUG, random UUID for each run to avoid conflicts with other consumers
-        # "group.id": str(uuid.uuid4()),
-        "auto.offset.reset": "earliest",  # Start reading from the earliest message
+        "bootstrap.servers": f"{params.get('kafka_host', 'localhost')}:{params.get('kafka_port', 9092)}",  # Kafka server and port
+        "group.id": params.get('kafka_group_id', 'my_group'),  # Consumer group ID
+        "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
         "session.timeout.ms": 6000,  # Session timeout for the consumer
         "max.poll.interval.ms": 300000,  # Maximum time between polls
@@ -184,7 +186,7 @@ def main():
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
-    topic_name = "ZTF_alerts_results"  # Replace with your topic name
+    topic_name = params.get("topic", "ZTF_alerts_results")  # Replace with your topic name
     consumer.subscribe([topic_name])  # Subscribe to the topic
     log(f"Subscribed to topic: {topic_name}")
     # Poll for messages from the topic
