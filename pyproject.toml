@@ -10,4 +10,4 @@ readme = "README.md"
 dependencies = []
 
 [tool.skyportal]
-version = ">=1.4.0"
+version = ">=4.1.0"
