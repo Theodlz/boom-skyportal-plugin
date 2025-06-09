@@ -1,6 +1,6 @@
 [project]
 name = "boom"
-version = "0.1.0"
+version = "0.1.1"
 description = "A SkyPortal micro-service to ingest alerts from the boom broker"
 authors = [
   { name = "Theophile du Laz", email = "theophile.dulaz@gmail.com" }
