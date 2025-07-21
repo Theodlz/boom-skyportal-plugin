@@ -262,7 +262,7 @@ def main():
                 # for each filter we get the "annotations" which is a JSON string, we parse it
                 annotation_data = json.loads(filter_data['annotations'])
                 # let's check if we already have an annotation with the group_id of the filter and the filter name as the origin
-                origin = f"{filt.group.name}:{filt.name}"
+                origin = f"{filt.group.nickname}:{filt.name}"
                 existing_annotation = session.scalar(
                     sa.select(Annotation).filter(
                         Annotation.obj_id == obj_id,
