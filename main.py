@@ -42,8 +42,7 @@ log = make_log("boom")
 
 init_db(**cfg["database"])
 
-params = cfg.get("plugins.boom.params", {})
-
+params = cfg.get("services.external.boom.params", {})
 thumbnail_types = [
     ("cutoutScience", "new"),
     ("cutoutTemplate", "ref"),
