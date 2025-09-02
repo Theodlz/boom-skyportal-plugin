@@ -55,9 +55,9 @@ def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
     if survey == "LSST": # LSST uses snappy instead of gzip
-        f = snappy.decompress(cutout_data)
-        with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
-            image_data = hdu[0].data
+        with snappy.decompress(cutout_data) as f:
+            with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
+                image_data = hdu[0].data
     else:
         with gzip.open(io.BytesIO(cutout_data), "rb") as f:
             with fits.open(io.BytesIO(f.read()), ignore_missing_simple=True) as hdu:
