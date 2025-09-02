@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import gzip
 import io
 import base64
+import snappy
 from confluent_kafka import Consumer, KafkaError
 
 import matplotlib
@@ -52,9 +53,14 @@ thumbnail_types = [
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
-    with gzip.open(io.BytesIO(cutout_data), "rb") as f:
-        with fits.open(io.BytesIO(f.read()), ignore_missing_simple=True) as hdu:
-            image_data = hdu[0].data
+    if survey == "LSST": # LSST uses snappy instead of gzip
+        with snappy.decompress(cutout_data) as f:
+            with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
+                image_data = hdu[0].data
+    else:
+        with gzip.open(io.BytesIO(cutout_data), "rb") as f:
+            with fits.open(io.BytesIO(f.read()), ignore_missing_simple=True) as hdu:
+                image_data = hdu[0].data
 
     # Survey-specific transformations to get North up and West on the right
     if survey == "ZTF":
