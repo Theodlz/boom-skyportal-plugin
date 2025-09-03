@@ -1,0 +1,11 @@
+services:
+    external: 
+        boom:
+            version: v0.1.0
+            params:
+                kafka:
+                    url: localhost:9092
+                    groupid: boom-consumer-group
+                topics:
+                    - ZTF_alerts_results
+                    - LSST_alerts_results
