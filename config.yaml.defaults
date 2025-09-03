@@ -1,7 +1,10 @@
 services:
     external: 
         boom:
-            version: v0.1.0
+            # version: v0.1.0
+            # OR
+            # branch: main
+            # sha: abc123
             params:
                 kafka:
                     url: localhost:9092
