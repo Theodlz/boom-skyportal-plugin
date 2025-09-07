@@ -9,5 +9,7 @@ license = "MIT"
 readme = "README.md"
 dependencies = []
 
-[tool.skyportal]
-version = ">=1.4.0"
+[tool.compatibility]
+compatible-with = [
+  { name = "skyportal", version = ">=1.4.0" }
+]
