@@ -71,7 +71,11 @@ def make_thumbnail(
 
     # Survey-specific transformations to get North up and West on the right
     if survey == "ZTF":
+        # flip the image in the vertical direction
         image_data = np.flipud(image_data)
+    elif survey == "LSST":
+        # rotate 90 degrees clockwise
+        image_data = np.rot90(image_data, k=-1)
 
     buff = io.BytesIO()
     plt.close("all")
@@ -279,15 +283,21 @@ def main():
                     continue
                 if filt['id'] not in passed_filter_ids:
                     # create the candidate if it's not already created
-                    candidate = Candidate(
-                        obj=obj,
-                        filter_id=filt['id'],
-                        # convert passed_at from a timestamp in milliseconds to a datetime object
-                        passed_at=datetime.fromtimestamp(filter_data['passed_at'] / 1000, timezone.utc),
-                        passing_alert_id=candid,
-                        uploader_id=1
-                    )
-                    session.add(candidate)
+                    try:
+                        candidate = Candidate(
+                            obj=obj,
+                            filter_id=filt['id'],
+                            # convert passed_at from a timestamp in milliseconds to a datetime object
+                            passed_at=datetime.fromtimestamp(filter_data['passed_at'] / 1000, timezone.utc),
+                            passing_alert_id=candid,
+                            uploader_id=1
+                        )
+                        session.add(candidate)
+                        session.commit()
+                    except Exception as e:
+                        log(f"Error creating candidate with candid {candid}: {e}")
+                        session.rollback()
+                        continue
                     log(f"Created candidate with candid {candid}")
                 else:
                     log(f"Skipping candidate with candid {candid}")
@@ -325,6 +335,11 @@ def main():
             # we group the photometry by survey and programid
             photometry_data = {}
             for phot in record['photometry']:
+                # TEMPORARY: ignore forced photometry
+                if phot['origin'] == 'ForcedPhot':
+                    continue
+                if phot['flux'] == -99999.0 or phot['flux_err'] == -99999.0:
+                    continue
                 key = (phot['survey'], phot['programid'])
                 if key not in photometry_data:
                     stream_ids = programid2streamid.get(key)
