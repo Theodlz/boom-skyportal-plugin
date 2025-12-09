@@ -1,5 +1,6 @@
 import fastavro
 import sqlalchemy as sa
+import traceback
 from sqlalchemy.orm.session import Session
 import json
 from datetime import datetime, timezone
@@ -54,8 +55,14 @@ def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
     if survey == "LSST": # LSST uses snappy instead of gzip
-        with snappy.decompress(cutout_data) as f:
-            with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
+        try:
+            with snappy.decompress(cutout_data) as f:
+                with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
+                    image_data = hdu[0].data
+        except Exception as e:
+            log(f"Failed to decompress LSST cutout with snappy: {e}, trying without decompression")
+            # try doing it without any decompression
+            with fits.open(io.BytesIO(cutout_data), ignore_missing_simple=True) as hdu:
                 image_data = hdu[0].data
     else:
         with gzip.open(io.BytesIO(cutout_data), "rb") as f:
@@ -64,7 +71,11 @@ def make_thumbnail(
 
     # Survey-specific transformations to get North up and West on the right
     if survey == "ZTF":
+        # flip the image in the vertical direction
         image_data = np.flipud(image_data)
+    elif survey == "LSST":
+        # rotate 90 degrees clockwise
+        image_data = np.rot90(image_data, k=-1)
 
     buff = io.BytesIO()
     plt.close("all")
@@ -119,6 +130,7 @@ def add_thumbnails(alert, survey, session):
                 alert["objectId"], alert[cutout_type], cutout_type, thumbnail_type, survey
             )
         except Exception as e:
+            traceback.print_exc()
             log(f"Failed to create thumbnail for cutout type {cutout_type}: {e}")
             continue
         post_thumbnail(thumbnail, user_id=1, session=session)
@@ -163,6 +175,19 @@ def make_programid2stream_mapper(session: Session):
         mapper[key] = list(mapper[key])
     return mapper
 
+def make_survey2instrumentid(session: Session):
+    ztf_instrument_id = session.scalar(sa.select(Instrument.id).where(Instrument.name == 'ZTF'))
+    if ztf_instrument_id is None:
+        raise ValueError("Instrument ZTF not found in the database")
+    lsst_instrument_id = session.scalar(sa.select(Instrument.id).where(Instrument.name == 'LSST'))
+    if lsst_instrument_id is None:
+        raise ValueError("Instrument LSST not found in the database")
+    survey2instrumentid = {
+        "ZTF": ztf_instrument_id,
+        "LSST": lsst_instrument_id
+    }
+    return survey2instrumentid
+
 def main():
     # first let's grab the instrument id for ZTF from the database
     with DBSession() as session:
@@ -170,14 +195,23 @@ def main():
         if user is None:
             log("User with id 1 not found in the database")
             return
-        instrument_id = session.scalar(sa.select(Instrument.id).where(Instrument.name == 'ZTF'))
-        if instrument_id is None:
-            log("Instrument ZTF not found in the database")
+        try:
+            survey2instrumentid = make_survey2instrumentid(session)
+        except ValueError as e:
+            log(str(e))
             return
         programid2streamid = make_programid2stream_mapper(session)
 
+        # get all filters
+        all_filters = session.scalars(sa.select(Filter)).all()
+        # only keep those where the Filter `altdata` has a boom key
+        boom_filters: list[Filter] = [f for f in all_filters if f.altdata is not None and 'boom' in f.altdata]
+        boom_filters = {f.altdata['boom']['filter_id']: {**f.to_dict(), 'group': f.group.to_dict()} for f in boom_filters}
+        if not boom_filters:
+            log("No boom filters found")
+            return
+
     # TODO: validate params
-    
     kafka_config = {
         "bootstrap.servers": f"{params.get('kafka_host', 'localhost')}:{params.get('kafka_port', 9092)}",  # Kafka server and port
         "group.id": params.get('kafka_group_id', 'my_group'),  # Consumer group ID
@@ -191,9 +225,9 @@ def main():
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
-    topic_name = params.get("topic", "ZTF_alerts_results")  # Replace with your topic name
-    consumer.subscribe([topic_name])  # Subscribe to the topic
-    log(f"Subscribed to topic: {topic_name}")
+    topic_names = params.get("topics", ["ZTF_alerts_results", "LSST_alerts_results"])  # Replace with your topic names
+    consumer.subscribe(topic_names)  # Subscribe to the topics
+    log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
     while True:
         msg = consumer.poll(timeout=10.0)
@@ -214,6 +248,7 @@ def main():
 
         with DBSession() as session:
             obj_id = record['objectId']
+            survey = record['survey']
             obj = session.scalar(sa.select(Obj).where(Obj.id == obj_id))
             if obj is None:
                 ra, dec = record['ra'], record['dec']
@@ -228,47 +263,53 @@ def main():
                 log(f"Created object with id {obj_id}")
 
                 # add thumbnails
-                add_thumbnails(record, 'ZTF', session)
+                add_thumbnails(record, survey.upper(), session)
             else:
                 log(f"Object with id {obj_id} already exists")
 
-            # next we get the candid
-            candid = record['candid']
-            filter_ids = [f['filter_id'] for f in record['filters']]
             # we checked which candidates are already created
+            candid = record['candid']
             passed_filter_ids = session.scalars(
                 sa.select(
                     Candidate.filter_id,
-                    Candidate.filter_id.in_(filter_ids)
                 ).where(Candidate.passing_alert_id == candid)
             ).all()
             passed_filter_ids = set(passed_filter_ids)
 
             for filter_data in record['filters']:
-                filt = session.scalar(sa.select(Filter).filter(Filter.id == filter_data['filter_id']))
+                filt = boom_filters.get(filter_data['filter_id'])
                 if filt is None:
                     log(f"Filter with id {filter_data['filter_id']} does not exist")
                     continue
-                if filter_data['filter_id'] not in passed_filter_ids:
+                if filt['id'] not in passed_filter_ids:
                     # create the candidate if it's not already created
-                    candidate = Candidate(
-                        obj=obj,
-                        filter_id=filt.id,
-                        # passed_at=filter['passed_at'],
-                        # passed at is a timestamp in milliseconds, we need to convert it to a datetime object
-                        passed_at=datetime.fromtimestamp(filter_data['passed_at'] / 1000, timezone.utc),
-                        passing_alert_id=candid,
-                        uploader_id=1
-                    )
-                    session.add(candidate)
+                    try:
+                        candidate = Candidate(
+                            obj=obj,
+                            filter_id=filt['id'],
+                            # convert passed_at from a timestamp in milliseconds to a datetime object
+                            passed_at=datetime.fromtimestamp(filter_data['passed_at'] / 1000, timezone.utc),
+                            passing_alert_id=candid,
+                            uploader_id=1
+                        )
+                        session.add(candidate)
+                        session.commit()
+                    except Exception as e:
+                        log(f"Error creating candidate with candid {candid}: {e}")
+                        session.rollback()
+                        continue
                     log(f"Created candidate with candid {candid}")
                 else:
                     log(f"Skipping candidate with candid {candid}")
 
                 # for each filter we get the "annotations" which is a JSON string, we parse it
                 annotation_data = json.loads(filter_data['annotations'])
-                # let's check if we already have an annotation with the group_id of the filter and the filter name as the origin
-                origin = f"{filt.group.nickname}:{filt.name}"
+
+                group_name = filt['group'].get('nickname')
+                if group_name is None: # if nickname is not present, use the name
+                    group_name = filt['group']['name']
+                origin = f"{group_name}:{filt['name']}"
+
                 existing_annotation = session.scalar(
                     sa.select(Annotation).filter(
                         Annotation.obj_id == obj_id,
@@ -294,9 +335,21 @@ def main():
             # we group the photometry by survey and programid
             photometry_data = {}
             for phot in record['photometry']:
+                # TEMPORARY: ignore forced photometry
+                if phot['origin'] == 'ForcedPhot':
+                    continue
+                if phot['flux'] == -99999.0 or phot['flux_err'] == -99999.0:
+                    continue
                 key = (phot['survey'], phot['programid'])
                 if key not in photometry_data:
                     stream_ids = programid2streamid.get(key)
+                    if stream_ids is None:
+                        log(f"No stream found for survey {phot['survey']} and programid {phot['programid']}, skipping photometry")
+                        continue
+                    instrument_id = survey2instrumentid.get(phot['survey'])
+                    if instrument_id is None:
+                        log(f"No instrument found for survey {phot['survey']}, skipping photometry")
+                        continue
                     photometry_data[key] = {
                         'obj_id': obj_id,
                         'group_ids': [1],
@@ -312,8 +365,11 @@ def main():
                         'dec': [],
                     }
                 photometry_data[key]['mjd'].append(phot['jd'] - 2400000.5)
-                photometry_data[key]['flux'].append(phot['flux'])
-                photometry_data[key]['fluxerr'].append(phot['flux_err'])
+                flux = phot['flux']
+                if flux is not None and not np.isnan(flux):
+                    flux = flux * 1e-9
+                photometry_data[key]['flux'].append(flux)
+                photometry_data[key]['fluxerr'].append(phot['flux_err'] * 1e-9)
                 photometry_data[key]['filter'].append(phot['band'])
                 photometry_data[key]['zp'].append(phot['zero_point'])
                 photometry_data[key]['magsys'].append('ab')
@@ -324,6 +380,7 @@ def main():
                 add_external_photometry(data, user, session)
 
             session.commit()
+
 
 if __name__ == "__main__":
     main()
