@@ -221,7 +221,19 @@ def main():
         "max.poll.interval.ms": 300000,  # Maximum time between polls
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
+
+    kafka_username = params.get('kafka_username')
+    kafka_password = params.get('kafka_password')
+    if kafka_username and kafka_password:
+        print("Using SASL_PLAINTEXT for Kafka authentication")
+        kafka_config.update({
+            "security.protocol": "SASL_PLAINTEXT",
+            "sasl.mechanism": "PLAIN",
+            "sasl.username": kafka_username,
+            "sasl.password": kafka_password,
+        })
     
+    print(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
