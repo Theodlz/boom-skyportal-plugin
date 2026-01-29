@@ -1,41 +1,29 @@
-import fastavro
-import sqlalchemy as sa
-import traceback
-from sqlalchemy.orm.session import Session
-import json
-from datetime import datetime, timezone
+import base64
 import gzip
 import io
-import base64
-import snappy
-from confluent_kafka import Consumer, KafkaError
+import json
+import traceback
+from datetime import datetime, timezone
 
+import fastavro
 import matplotlib
 import matplotlib.pyplot as plt
-from astropy.io import fits
-from astropy.visualization import (
-    AsymmetricPercentileInterval,
-    ImageNormalize,
-    LinearStretch,
-    LogStretch,
-)
 import numpy as np
+import sqlalchemy as sa
+from astropy.io import fits
+from astropy.visualization import (AsymmetricPercentileInterval,
+                                   ImageNormalize, LinearStretch, LogStretch)
+from confluent_kafka import Consumer, KafkaError
+from scipy.ndimage import rotate
+from sqlalchemy.orm.session import Session
 
 from baselayer.app.env import load_env
 from baselayer.app.models import init_db
 from baselayer.log import make_log
-from skyportal.models import (
-    DBSession,
-    Obj,
-    Candidate,
-    Filter,
-    Annotation,
-    Instrument,
-    User,
-    Stream,
-)
 from skyportal.handlers.api.photometry import add_external_photometry
 from skyportal.handlers.api.thumbnail import post_thumbnail
+from skyportal.models import (Annotation, Candidate, DBSession, Filter,
+                              Instrument, Obj, Stream, User)
 
 matplotlib.pyplot.switch_backend("Agg")
 
@@ -54,28 +42,22 @@ thumbnail_types = [
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
-    if survey == "LSST": # LSST uses snappy instead of gzip
-        try:
-            with snappy.decompress(cutout_data) as f:
-                with fits.open(io.BytesIO(f), ignore_missing_simple=True) as hdu:
-                    image_data = hdu[0].data
-        except Exception as e:
-            log(f"Failed to decompress LSST cutout with snappy: {e}, trying without decompression")
-            # try doing it without any decompression
-            with fits.open(io.BytesIO(cutout_data), ignore_missing_simple=True) as hdu:
-                image_data = hdu[0].data
+    rotpa = None
+    if survey == "LSST": # LSST uses no compression
+        with fits.open(
+            io.BytesIO(cutout_data), ignore_missing_simple=True
+        ) as hdu:
+            rotpa = hdu[0].header.get("ROTPA", None)
+            data = hdu[0].data
     else:
-        with gzip.open(io.BytesIO(cutout_data), "rb") as f:
-            with fits.open(io.BytesIO(f.read()), ignore_missing_simple=True) as hdu:
-                image_data = hdu[0].data
-
-    # Survey-specific transformations to get North up and West on the right
-    if survey == "ZTF":
-        # flip the image in the vertical direction
-        image_data = np.flipud(image_data)
-    elif survey == "LSST":
-        # rotate 90 degrees clockwise
-        image_data = np.rot90(image_data, k=-1)
+        with (
+            gzip.open(io.BytesIO(cutout_data), "rb") as f,
+            fits.open(
+                io.BytesIO(f.read()), ignore_missing_simple=True
+            ) as hdu,
+        ):
+            rotpa = hdu[0].header.get("ROTPA", None)
+            data = hdu[0].data
 
     buff = io.BytesIO()
     plt.close("all")
@@ -85,9 +67,8 @@ def make_thumbnail(
     ax.set_axis_off()
     fig.add_axes(ax)
 
-    # replace nans with median:
-    img = np.array(image_data)
-    # replace dubiously large values
+    # Clean the data
+    img = np.array(data)
     xl = np.greater(np.abs(img), 1e20, where=~np.isnan(img))
     if img[xl].any():
         img[xl] = np.nan
@@ -95,17 +76,35 @@ def make_thumbnail(
         median = float(np.nanmean(img.flatten()))
         img = np.nan_to_num(img, nan=median)
 
-    norm = ImageNormalize(
-        img,
-        stretch=LinearStretch()
-        if cutout_type == "cutoutDifference"
-        else LogStretch(),
-    )
+    # Normalize
+    stretch = LinearStretch() if cutout_type == "cutoutDifference" else LogStretch()
+    norm = ImageNormalize(img, stretch=stretch)
     img_norm = norm(img)
+
     normalizer = AsymmetricPercentileInterval(
         lower_percentile=1, upper_percentile=100
     )
     vmin, vmax = normalizer.get_limits(img_norm)
+
+    # Survey-specific transformations to get North up and West on the right
+    if survey == "ZTF":
+        # flip the image in the vertical direction
+        img_norm = np.flipud(img_norm)
+    elif survey == "LSST":
+        try:
+            # Rotate clockwise by ROTPA degrees, reshape to avoid cropping, fill blanks with 0
+            img_norm = rotate(
+                img_norm,
+                -rotpa,
+                reshape=True,
+                order=1,
+                mode="constant",
+                cval=0.0,
+            )
+        except Exception as e:
+            # If scipy is not available or rotation fails, skip rotation
+            log(f"Failed to rotate LSST image for obj_id {obj_id}: {e}")
+
     ax.imshow(img_norm, cmap="bone", origin="lower", vmin=vmin, vmax=vmax)
     plt.savefig(buff, dpi=42)
 
@@ -222,16 +221,21 @@ def main():
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
 
-    kafka_username = params.get('kafka_username')
-    kafka_password = params.get('kafka_password')
+    kafka_username, kafka_password = params.get("kafka_username"), params.get("kafka_password")
+    kafka_sasl_mechanism = params.get("kafka_sasl_mechanism", "PLAIN")
     if kafka_username and kafka_password:
-        print("Using SASL_PLAINTEXT for Kafka authentication")
-        kafka_config.update({
-            "security.protocol": "SASL_PLAINTEXT",
-            "sasl.mechanism": "PLAIN",
-            "sasl.username": kafka_username,
-            "sasl.password": kafka_password,
-        })
+        # validate that sasl mechanism is one of the supported ones
+        if kafka_sasl_mechanism not in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]:
+            log(f"Unsupported SASL mechanism: {kafka_sasl_mechanism}")
+            return
+        kafka_config.update(
+            {
+                "security.protocol": "SASL_PLAINTEXT",
+                "sasl.mechanism": kafka_sasl_mechanism,
+                "sasl.username": kafka_username,
+                "sasl.password": kafka_password,
+            }
+        )
     
     print(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
     # Create a Kafka consumer instance with the configuration
