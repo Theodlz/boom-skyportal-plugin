@@ -89,7 +89,7 @@ def make_thumbnail(
     # Survey-specific transformations to get North up and West on the right
     if survey == "ZTF":
         # flip the image in the vertical direction
-        image_data = np.flipud(image_data)
+        img_norm = np.flipud(img_norm)
     elif survey == "LSST":
         try:
             # Rotate clockwise by ROTPA degrees, reshape to avoid cropping, fill blanks with 0
