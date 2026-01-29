@@ -237,6 +237,7 @@ def main():
             }
         )
     
+    print(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
@@ -380,8 +381,11 @@ def main():
                         'dec': [],
                     }
                 photometry_data[key]['mjd'].append(phot['jd'] - 2400000.5)
-                photometry_data[key]['flux'].append(phot['flux'])
-                photometry_data[key]['fluxerr'].append(phot['flux_err'])
+                flux = phot['flux']
+                if flux is not None and not np.isnan(flux):
+                    flux = flux * 1e-9
+                photometry_data[key]['flux'].append(flux)
+                photometry_data[key]['fluxerr'].append(phot['flux_err'] * 1e-9)
                 photometry_data[key]['filter'].append(phot['band'])
                 photometry_data[key]['zp'].append(phot['zero_point'])
                 photometry_data[key]['magsys'].append('ab')
