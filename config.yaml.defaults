@@ -6,9 +6,13 @@ services:
             # branch: main
             # sha: abc123
             params:
-                kafka:
-                    url: localhost:9092
-                    groupid: boom-consumer-group
+                kafka_host: localhost
+                kafka_port: 9092
+                kafka_group_id: boom-skyportal-plugin-group
+                # !!! If your Kafka instance requires authentication, uncomment and set the following parameters: !!!
+                # kafka_username: your_kafka_username
+                # kafka_password: your_kafka_password
+                # kafka_sasl_mechanism: PLAIN
                 topics:
                     - ZTF_alerts_results
                     - LSST_alerts_results
