@@ -356,6 +356,9 @@ def main():
                     continue
                 if phot['flux'] == -99999.0 or phot['flux_err'] == -99999.0:
                     continue
+                # if flux_err is None, NaN, or not finite, skip
+                if phot['flux_err'] is None or not np.isfinite(phot['flux_err']):
+                    continue
                 key = (phot['survey'], phot['programid'])
                 if key not in photometry_data:
                     stream_ids = programid2streamid.get(key)
