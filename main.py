@@ -39,6 +39,11 @@ thumbnail_types = [
     ("cutoutDifference", "sub"),
 ]
 
+ZP_PER_SURVEY = {
+ "LSST": 8.9,
+ "ZTF": 23.9
+}
+
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
@@ -383,6 +388,7 @@ def main():
                         'ra': [],
                         'dec': [],
                     }
+
                 photometry_data[key]['mjd'].append(phot['jd'] - 2400000.5)
                 flux = phot['flux']
                 if flux is not None and not np.isnan(flux):
@@ -390,7 +396,7 @@ def main():
                 photometry_data[key]['flux'].append(flux)
                 photometry_data[key]['fluxerr'].append(phot['flux_err'] * 1e-9)
                 photometry_data[key]['filter'].append(phot['band'])
-                photometry_data[key]['zp'].append(phot['zero_point'])
+                photometry_data[key]['zp'].append(ZP_PER_SURVEY[str(phot['survey']).upper()])
                 photometry_data[key]['magsys'].append('ab')
                 photometry_data[key]['ra'].append(phot['ra'])
                 photometry_data[key]['dec'].append(phot['dec'])
