@@ -44,6 +44,16 @@ ZP_PER_SURVEY = {
  "ZTF": 23.9
 }
 
+def boom_origin_to_skyportal_origin(boom_origin):
+    # Convert the photometry origin from Boom format to SkyPortal format
+    # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
+    if boom_origin == "Alert":
+        return None
+    elif boom_origin == "ForcedPhot":
+        return "alert_fp"
+    else:
+        raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
+
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
@@ -357,8 +367,7 @@ def main():
             photometry_data = {}
             for phot in record['photometry']:
                 # TEMPORARY: ignore forced photometry
-                if phot['origin'] == 'ForcedPhot':
-                    continue
+                origin = boom_origin_to_skyportal_origin(phot['origin'])
                 if phot['flux'] == -99999.0 or phot['flux_err'] == -99999.0:
                     continue
                 # if flux_err is None, NaN, or not finite, skip
@@ -387,6 +396,7 @@ def main():
                         'magsys': [],
                         'ra': [],
                         'dec': [],
+                        'origin': []
                     }
 
                 photometry_data[key]['mjd'].append(phot['jd'] - 2400000.5)
@@ -400,6 +410,7 @@ def main():
                 photometry_data[key]['magsys'].append('ab')
                 photometry_data[key]['ra'].append(phot['ra'])
                 photometry_data[key]['dec'].append(phot['dec'])
+                photometry_data[key]['origin'].append(origin)
 
             for key, data in photometry_data.items():
                 add_external_photometry(data, user, session)
