@@ -44,6 +44,126 @@ ZP_PER_SURVEY = {
  "ZTF": 23.9
 }
 
+
+def get_or_create_object(obj_id, ra, dec, session: Session) -> tuple[Obj, bool]:
+    """Get or create an Obj with the given ID. If RA and Dec are provided, they will be used for creation if the object does not exist.
+
+    Parameters
+    ----------
+    obj_id : str
+        The ID of the object to get or create.
+    ra : float
+        The right ascension of the object, used for creation if the object does not exist.
+    dec : float
+        The declination of the object, used for creation if the object does not exist.
+    session : Session
+        The database session to use for the query and potential creation.
+
+    Returns
+    -------
+    tuple[Obj, bool]
+        A tuple containing the Obj instance and a boolean indicating whether the object was created (True) or already existed (False).
+    """
+    obj = session.scalar(sa.select(Obj).where(Obj.id == obj_id))
+    if obj is not None:
+        return obj, False
+
+    obj = Obj(
+        id=obj_id,
+        ra=ra,
+        dec=dec,
+        ra_dis=ra,
+        dec_dis=dec,
+    )
+    session.add(obj)
+    log(f"Created object with id {obj_id}")
+    return obj, True
+
+
+def ingest_photometry_array(
+    photometry_array,
+    obj_id,
+    user,
+    session,
+    programid2streamid,
+    survey2instrumentid,
+):
+    """Ingest photometry data from Boom into SkyPortal.
+    
+    Parameters
+    ----------
+    photometry_array : list[dict]
+        A list of photometry points, where each point is a dictionary containing the photometry data in Boom format.
+    obj_id : str
+        The ID of the object to which the photometry belongs.
+    user : User
+        The user performing the ingestion, used for attribution in SkyPortal.
+    session : Session
+        The database session to use for any necessary queries during ingestion.
+    programid2streamid : dict[tuple[str, int], list[int]]
+        A mapping from (survey, programid) to a list of stream IDs in SkyPortal, used to determine which streams to associate the photometry with based on its survey and programid.
+    survey2instrumentid : dict[str, int]
+        A mapping from survey names to instrument IDs in SkyPortal. This is used to determine which instrument to associate the photometry with based on its survey.
+    """
+    # Group points by (survey, programid) and submit each chunk to SkyPortal.
+    photometry_data = {}
+    for phot in photometry_array:
+        try:
+            origin = boom_origin_to_skyportal_origin(phot["origin"])
+        except ValueError as e:
+            log(f"{e}; skipping photometry point for obj_id {obj_id}")
+            continue
+
+        if phot["flux"] == -99999.0 or phot["flux_err"] == -99999.0:
+            continue
+        if phot["flux_err"] is None or not np.isfinite(phot["flux_err"]):
+            continue
+
+        survey = str(phot["survey"]).upper()
+        key = (survey, phot["programid"])
+        if key not in photometry_data:
+            stream_ids = programid2streamid.get(key)
+            if stream_ids is None:
+                log(
+                    f"No stream found for survey {survey} and programid {phot['programid']}, skipping photometry"
+                )
+                continue
+            instrument_id = survey2instrumentid.get(survey)
+            if instrument_id is None:
+                log(f"No instrument found for survey {survey}, skipping photometry")
+                continue
+            photometry_data[key] = {
+                "obj_id": obj_id,
+                "group_ids": [1],
+                "stream_ids": stream_ids,
+                "instrument_id": instrument_id,
+                "mjd": [],
+                "flux": [],
+                "fluxerr": [],
+                "filter": [],
+                "zp": [],
+                "magsys": [],
+                "ra": [],
+                "dec": [],
+                "origin": [],
+            }
+
+        photometry_data[key]["mjd"].append(phot["jd"] - 2400000.5)
+        flux = phot["flux"]
+        if flux is not None and not np.isnan(flux):
+            flux = flux * 1e-9
+        photometry_data[key]["flux"].append(flux)
+        photometry_data[key]["fluxerr"].append(phot["flux_err"] * 1e-9)
+        photometry_data[key]["filter"].append(phot["band"])
+        photometry_data[key]["zp"].append(ZP_PER_SURVEY[survey])
+        photometry_data[key]["magsys"].append("ab")
+        photometry_data[key]["ra"].append(phot["ra"])
+        photometry_data[key]["dec"].append(phot["dec"])
+        photometry_data[key]["origin"].append(origin)
+
+    for _, data in photometry_data.items():
+        add_external_photometry(data, user, session)
+
 def boom_origin_to_skyportal_origin(boom_origin):
     # Convert the photometry origin from Boom format to SkyPortal format
     # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
@@ -280,19 +400,16 @@ def main():
         with DBSession() as session:
             obj_id = record['objectId']
             survey = record['survey']
-            obj = session.scalar(sa.select(Obj).where(Obj.id == obj_id))
+            obj, obj_created = get_or_create_object(
+                session,
+                obj_id,
+                record['ra'],
+                record['dec'],
+            )
             if obj is None:
-                ra, dec = record['ra'], record['dec']
-                obj = Obj(
-                    id=obj_id,
-                    ra=ra,
-                    dec=dec,
-                    ra_dis=ra,
-                    dec_dis=dec,
-                )
-                session.add(obj)
-                log(f"Created object with id {obj_id}")
-
+                session.rollback()
+                continue
+            if obj_created:
                 # add thumbnails
                 add_thumbnails(record, survey.upper(), session)
             else:
@@ -363,57 +480,50 @@ def main():
 
             session.commit()
 
-            # we group the photometry by survey and programid
-            photometry_data = {}
-            for phot in record['photometry']:
-                # TEMPORARY: ignore forced photometry
-                origin = boom_origin_to_skyportal_origin(phot['origin'])
-                if phot['flux'] == -99999.0 or phot['flux_err'] == -99999.0:
-                    continue
-                # if flux_err is None, NaN, or not finite, skip
-                if phot['flux_err'] is None or not np.isfinite(phot['flux_err']):
-                    continue
-                key = (phot['survey'], phot['programid'])
-                if key not in photometry_data:
-                    stream_ids = programid2streamid.get(key)
-                    if stream_ids is None:
-                        log(f"No stream found for survey {phot['survey']} and programid {phot['programid']}, skipping photometry")
-                        continue
-                    instrument_id = survey2instrumentid.get(phot['survey'])
-                    if instrument_id is None:
-                        log(f"No instrument found for survey {phot['survey']}, skipping photometry")
-                        continue
-                    photometry_data[key] = {
-                        'obj_id': obj_id,
-                        'group_ids': [1],
-                        'stream_ids': stream_ids,
-                        'instrument_id': instrument_id,
-                        'mjd': [],
-                        'flux': [],
-                        'fluxerr': [],
-                        'filter': [],
-                        'zp': [],
-                        'magsys': [],
-                        'ra': [],
-                        'dec': [],
-                        'origin': []
-                    }
+            ingest_photometry_array(
+                record.get('photometry', []),
+                obj_id,
+                user,
+                session,
+                programid2streamid,
+                survey2instrumentid,
+            )
+            
+            session.commit()
 
-                photometry_data[key]['mjd'].append(phot['jd'] - 2400000.5)
-                flux = phot['flux']
-                if flux is not None and not np.isnan(flux):
-                    flux = flux * 1e-9
-                photometry_data[key]['flux'].append(flux)
-                photometry_data[key]['fluxerr'].append(phot['flux_err'] * 1e-9)
-                photometry_data[key]['filter'].append(phot['band'])
-                photometry_data[key]['zp'].append(ZP_PER_SURVEY[str(phot['survey']).upper()])
-                photometry_data[key]['magsys'].append('ab')
-                photometry_data[key]['ra'].append(phot['ra'])
-                photometry_data[key]['dec'].append(phot['dec'])
-                photometry_data[key]['origin'].append(origin)
+            # Ingest cross-survey matches (object + photometry), if provided.
+            survey_matches = record.get('survey_matches', {})
+            if isinstance(survey_matches, dict):
+                for match_survey, match in survey_matches.items():
+                    if match is None:
+                        continue
+                    # we never have matches with the same survey as the main object,
+                    # so let's skip those just in case
+                    if match_survey.upper() == survey.upper():
+                        continue
+                
+                    if not isinstance(match, dict):
+                        continue
 
-            for key, data in photometry_data.items():
-                add_external_photometry(data, user, session)
+                    match_obj_id = match['objectId']
+
+                    _, _ = get_or_create_object(
+                        session,
+                        match_obj_id,
+                        match['ra'],
+                        match['dec'],
+                    )
+
+                    # TODO: grab the cutouts for the match object (if newly added) from the BOOM API
+
+                    ingest_photometry_array(
+                        match['photometry'],
+                        match_obj_id,
+                        user,
+                        session,
+                        programid2streamid,
+                        survey2instrumentid,
+                    )
 
             session.commit()
 
