@@ -401,10 +401,10 @@ def main():
             obj_id = record['objectId']
             survey = record['survey']
             obj, obj_created = get_or_create_object(
-                session,
                 obj_id,
                 record['ra'],
                 record['dec'],
+                session,
             )
             if obj is None:
                 session.rollback()
@@ -508,10 +508,10 @@ def main():
                     match_obj_id = match['objectId']
 
                     _, _ = get_or_create_object(
-                        session,
                         match_obj_id,
                         match['ra'],
                         match['dec'],
+                        session,
                     )
 
                     # TODO: grab the cutouts for the match object (if newly added) from the BOOM API
