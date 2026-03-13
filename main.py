@@ -297,6 +297,9 @@ def make_programid2stream_mapper(session: Session):
     mapper = {}
     for stream in streams:
         altdata = stream.altdata
+        if not isinstance(altdata, dict) or 'collection' not in altdata or 'selector' not in altdata:
+            log(f"Stream with id {stream.id} has invalid altdata, skipping")
+            continue
         survey = altdata['collection'].split('_')[0]
         programid = max(altdata['selector'])
         key = (survey, programid)
