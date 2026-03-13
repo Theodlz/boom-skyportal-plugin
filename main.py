@@ -47,7 +47,8 @@ init_db(**cfg["database"])
 
 params = cfg.get("services.external.boom.params", {})
 kafka_params = params.get("kafka", {})
-api_params = params.get("api", {})
+# fallback to the top-level "boom" config if any
+api_params = params.get("api", cfg.get("boom", {}))
 
 thumbnail_types = [
     ("cutoutScience", "new"),
