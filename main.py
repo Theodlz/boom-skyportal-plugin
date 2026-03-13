@@ -414,6 +414,7 @@ def make_survey2instrumentid(session: Session):
     survey2instrumentid = {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
     return survey2instrumentid
 
+
 def make_boom_filters(session: Session):
     # get all filters
     all_filters = session.scalars(sa.select(Filter)).all()
@@ -538,6 +539,7 @@ def main():
             ).all()
             passed_filter_ids = set(passed_filter_ids)
 
+            created_candidates = False
             for filter_data in record["filters"]:
                 filt = boom_filters.get(filter_data["filter_id"])
                 if filt is None:
@@ -545,12 +547,14 @@ def main():
                     # we know this filter is not in the database, so we skip it without logging
                     if filter_data["filter_id"] in EXTERNAL_FILTER_IDS:
                         continue
-                    # else we try to refresh the filter list from the database, in case 
+                    # else we try to refresh the filter list from the database, in case
                     # new filters have been added since the start of the program
                     boom_filters = make_boom_filters(session)
                     filt = boom_filters.get(filter_data["filter_id"])
                     if filt is None:
-                        log(f"Filter with id {filter_data['filter_id']} does not exist in SkyPortal")
+                        log(
+                            f"Filter with id {filter_data['filter_id']} does not exist in SkyPortal"
+                        )
                         EXTERNAL_FILTER_IDS.add(filter_data["filter_id"])
                         continue
                 if filt["id"] not in passed_filter_ids:
@@ -572,6 +576,7 @@ def main():
                         log(f"Error creating candidate with candid {candid}: {e}")
                         session.rollback()
                         continue
+                    created_candidates = True
                     log(f"Created candidate with candid {candid}")
                 else:
                     log(f"Skipping candidate with candid {candid}")
@@ -599,6 +604,12 @@ def main():
                     # we update the data of the annotation
                     existing_annotation.data = annotation_data
                     log(f"Updated annotation with origin {origin}")
+
+            if not created_candidates:
+                log(
+                    f"No new candidates created for object {obj_id} with candid {candid}"
+                )
+                continue
 
             session.commit()
 
