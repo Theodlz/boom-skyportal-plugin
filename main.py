@@ -3,16 +3,21 @@ import gzip
 import io
 import json
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import fastavro
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
 import sqlalchemy as sa
 from astropy.io import fits
-from astropy.visualization import (AsymmetricPercentileInterval,
-                                   ImageNormalize, LinearStretch, LogStretch)
+from astropy.visualization import (
+    AsymmetricPercentileInterval,
+    ImageNormalize,
+    LinearStretch,
+    LogStretch,
+)
 from confluent_kafka import Consumer, KafkaError
 from scipy.ndimage import rotate
 from sqlalchemy.orm.session import Session
@@ -22,8 +27,16 @@ from baselayer.app.models import init_db
 from baselayer.log import make_log
 from skyportal.handlers.api.photometry import add_external_photometry
 from skyportal.handlers.api.thumbnail import post_thumbnail
-from skyportal.models import (Annotation, Candidate, DBSession, Filter,
-                              Instrument, Obj, Stream, User)
+from skyportal.models import (
+    Annotation,
+    Candidate,
+    DBSession,
+    Filter,
+    Instrument,
+    Obj,
+    Stream,
+    User,
+)
 
 matplotlib.pyplot.switch_backend("Agg")
 
@@ -39,10 +52,66 @@ thumbnail_types = [
     ("cutoutDifference", "sub"),
 ]
 
-ZP_PER_SURVEY = {
- "LSST": 8.9,
- "ZTF": 23.9
-}
+ZP_PER_SURVEY = {"LSST": 8.9, "ZTF": 23.9}
+
+
+class BoomAPIClient:
+    def __init__(
+        self, protocol: str, host: str, port: int | None, username: str, password: str
+    ):
+        self.base_url = f"{protocol}://{host}:{port}"
+        self.username = username
+        self.password = password
+        self.token = None
+        self.token_expiry = None
+
+    def get_token(self):
+        if (
+            self.token is not None
+            and self.token_expiry is not None
+            and datetime.now(timezone.utc) < self.token_expiry
+        ):
+            return self.token
+        response = requests.post(
+            f"{self.base_url}/auth",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "username": self.username,
+                "password": self.password,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        self.token = data["access_token"]
+        self.token_expiry = datetime.now(timezone.utc) + timedelta(
+            seconds=data["expires_in"]
+        )
+        return self.token
+
+    def get_cutouts_by_object_id(self, survey: str, object_id: str):
+        token = self.get_token()
+        response = requests.get(
+            f"{self.base_url}/surveys/{survey.upper()}/cutouts",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            params={"objectId": object_id},
+        )
+        # if the response is a 401, it means the token is invalid, so we refresh the token and try again once
+        if response.status_code == 401:
+            log("Token expired or invalid, refreshing token")
+            self.token = None
+            token = self.get_token()
+            return self.get_cutouts_by_object_id(survey, object_id)
+        response.raise_for_status()
+        if "data" not in response.json():
+            raise ValueError(f"Unexpected response format: {response.json()}")
+        data = response.json()["data"]
+        data["objectId"] = object_id
+        return data
 
 
 def get_or_create_object(obj_id, ra, dec, session: Session) -> tuple[Obj, bool]:
@@ -89,7 +158,7 @@ def ingest_photometry_array(
     survey2instrumentid,
 ):
     """Ingest photometry data from Boom into SkyPortal.
-    
+
     Parameters
     ----------
     photometry_array : list[dict]
@@ -164,6 +233,7 @@ def ingest_photometry_array(
     for _, data in photometry_data.items():
         add_external_photometry(data, user, session)
 
+
 def boom_origin_to_skyportal_origin(boom_origin):
     # Convert the photometry origin from Boom format to SkyPortal format
     # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
@@ -174,22 +244,19 @@ def boom_origin_to_skyportal_origin(boom_origin):
     else:
         raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
 
+
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
     rotpa = None
-    if survey == "LSST": # LSST uses no compression
-        with fits.open(
-            io.BytesIO(cutout_data), ignore_missing_simple=True
-        ) as hdu:
+    if survey == "LSST":  # LSST uses no compression
+        with fits.open(io.BytesIO(cutout_data), ignore_missing_simple=True) as hdu:
             rotpa = hdu[0].header.get("ROTPA", None)
             data = hdu[0].data
     else:
         with (
             gzip.open(io.BytesIO(cutout_data), "rb") as f,
-            fits.open(
-                io.BytesIO(f.read()), ignore_missing_simple=True
-            ) as hdu,
+            fits.open(io.BytesIO(f.read()), ignore_missing_simple=True) as hdu,
         ):
             rotpa = hdu[0].header.get("ROTPA", None)
             data = hdu[0].data
@@ -216,9 +283,7 @@ def make_thumbnail(
     norm = ImageNormalize(img, stretch=stretch)
     img_norm = norm(img)
 
-    normalizer = AsymmetricPercentileInterval(
-        lower_percentile=1, upper_percentile=100
-    )
+    normalizer = AsymmetricPercentileInterval(lower_percentile=1, upper_percentile=100)
     vmin, vmax = normalizer.get_limits(img_norm)
 
     # Survey-specific transformations to get North up and West on the right
@@ -254,6 +319,7 @@ def make_thumbnail(
 
     return thumbnail_dict
 
+
 def add_thumbnails(alert, survey, session):
     for cutout_type, thumbnail_type in thumbnail_types:
         if cutout_type not in alert:
@@ -261,14 +327,18 @@ def add_thumbnails(alert, survey, session):
             continue
         try:
             thumbnail = make_thumbnail(
-                alert["objectId"], alert[cutout_type], cutout_type, thumbnail_type, survey
+                alert["objectId"],
+                alert[cutout_type],
+                cutout_type,
+                thumbnail_type,
+                survey,
             )
         except Exception as e:
             traceback.print_exc()
             log(f"Failed to create thumbnail for cutout type {cutout_type}: {e}")
             continue
         post_thumbnail(thumbnail, user_id=1, session=session)
-    
+
 
 def read_avro(msg):
     """
@@ -287,6 +357,7 @@ def read_avro(msg):
         return record  # Return the first record found
     return None  # Return None if no records are found or if an error occurs
 
+
 def make_programid2stream_mapper(session: Session):
     # here we:
     # - get all the streams
@@ -296,12 +367,19 @@ def make_programid2stream_mapper(session: Session):
     streams = session.scalars(sa.select(Stream)).all()
     mapper = {}
     for stream in streams:
+        if stream is None:
+            log("Warning: Stream is None, skipping")
+            continue
         altdata = stream.altdata
-        if not isinstance(altdata, dict) or 'collection' not in altdata or 'selector' not in altdata:
+        if (
+            not isinstance(altdata, dict)
+            or "collection" not in altdata
+            or "selector" not in altdata
+        ):
             log(f"Stream with id {stream.id} has invalid altdata, skipping")
             continue
-        survey = altdata['collection'].split('_')[0]
-        programid = max(altdata['selector'])
+        survey = altdata["collection"].split("_")[0]
+        programid = max(altdata["selector"])
         key = (survey, programid)
         if key not in mapper:
             mapper[key] = set()
@@ -312,20 +390,31 @@ def make_programid2stream_mapper(session: Session):
         mapper[key] = list(mapper[key])
     return mapper
 
+
 def make_survey2instrumentid(session: Session):
-    ztf_instrument_id = session.scalar(sa.select(Instrument.id).where(Instrument.name == 'ZTF'))
+    ztf_instrument_id = session.scalar(
+        sa.select(Instrument.id).where(Instrument.name == "ZTF")
+    )
     if ztf_instrument_id is None:
         raise ValueError("Instrument ZTF not found in the database")
-    lsst_instrument_id = session.scalar(sa.select(Instrument.id).where(Instrument.name == 'LSST'))
+    lsst_instrument_id = session.scalar(
+        sa.select(Instrument.id).where(Instrument.name == "LSST")
+    )
     if lsst_instrument_id is None:
         raise ValueError("Instrument LSST not found in the database")
-    survey2instrumentid = {
-        "ZTF": ztf_instrument_id,
-        "LSST": lsst_instrument_id
-    }
+    survey2instrumentid = {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
     return survey2instrumentid
 
+
 def main():
+    boom_client = BoomAPIClient(
+        protocol=params.get("api_protocol", "https"),
+        host=params.get("api_host", "api.kaboom.caltech.edu"),
+        port=params.get("api_port", None),
+        username=params.get("api_username", ""),
+        password=params.get("api_password", ""),
+    )
+
     # first let's grab the instrument id for ZTF from the database
     with DBSession() as session:
         user = session.scalar(sa.select(User).where(User.id == 1))
@@ -342,8 +431,13 @@ def main():
         # get all filters
         all_filters = session.scalars(sa.select(Filter)).all()
         # only keep those where the Filter `altdata` has a boom key
-        boom_filters: list[Filter] = [f for f in all_filters if f.altdata is not None and 'boom' in f.altdata]
-        boom_filters = {f.altdata['boom']['filter_id']: {**f.to_dict(), 'group': f.group.to_dict()} for f in boom_filters}
+        boom_filters: list[Filter] = [
+            f for f in all_filters if f.altdata is not None and "boom" in f.altdata
+        ]
+        boom_filters = {
+            f.altdata["boom"]["filter_id"]: {**f.to_dict(), "group": f.group.to_dict()}
+            for f in boom_filters
+        }
         if not boom_filters:
             log("No boom filters found")
             return
@@ -351,7 +445,7 @@ def main():
     # TODO: validate params
     kafka_config = {
         "bootstrap.servers": f"{params.get('kafka_host', 'localhost')}:{params.get('kafka_port', 9092)}",  # Kafka server and port
-        "group.id": params.get('kafka_group_id', 'my_group'),  # Consumer group ID
+        "group.id": params.get("kafka_group_id", "my_group"),  # Consumer group ID
         "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
         "session.timeout.ms": 6000,  # Session timeout for the consumer
@@ -359,7 +453,10 @@ def main():
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
 
-    kafka_username, kafka_password = params.get("kafka_username"), params.get("kafka_password")
+    kafka_username, kafka_password = (
+        params.get("kafka_username"),
+        params.get("kafka_password"),
+    )
     kafka_sasl_mechanism = params.get("kafka_sasl_mechanism", "PLAIN")
     if kafka_username and kafka_password:
         # validate that sasl mechanism is one of the supported ones
@@ -374,12 +471,16 @@ def main():
                 "sasl.password": kafka_password,
             }
         )
-    
-    print(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
+
+    print(
+        f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})"
+    )
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
-    topic_names = params.get("topics", ["ZTF_alerts_results", "LSST_alerts_results"])  # Replace with your topic names
+    topic_names = params.get(
+        "topics", ["ZTF_alerts_results", "LSST_alerts_results"]
+    )  # Replace with your topic names
     consumer.subscribe(topic_names)  # Subscribe to the topics
     log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
@@ -396,17 +497,17 @@ def main():
             else:
                 log(f"Error: {msg.error()}")
                 continue
-        
+
         # Successfully received a message
         record = read_avro(msg)
 
         with DBSession() as session:
-            obj_id = record['objectId']
-            survey = record['survey']
+            obj_id = record["objectId"]
+            survey = record["survey"]
             obj, obj_created = get_or_create_object(
                 obj_id,
-                record['ra'],
-                record['dec'],
+                record["ra"],
+                record["dec"],
                 session,
             )
             if obj is None:
@@ -419,7 +520,7 @@ def main():
                 log(f"Object with id {obj_id} already exists")
 
             # we checked which candidates are already created
-            candid = record['candid']
+            candid = record["candid"]
             passed_filter_ids = session.scalars(
                 sa.select(
                     Candidate.filter_id,
@@ -427,21 +528,23 @@ def main():
             ).all()
             passed_filter_ids = set(passed_filter_ids)
 
-            for filter_data in record['filters']:
-                filt = boom_filters.get(filter_data['filter_id'])
+            for filter_data in record["filters"]:
+                filt = boom_filters.get(filter_data["filter_id"])
                 if filt is None:
                     log(f"Filter with id {filter_data['filter_id']} does not exist")
                     continue
-                if filt['id'] not in passed_filter_ids:
+                if filt["id"] not in passed_filter_ids:
                     # create the candidate if it's not already created
                     try:
                         candidate = Candidate(
                             obj=obj,
-                            filter_id=filt['id'],
+                            filter_id=filt["id"],
                             # convert passed_at from a timestamp in milliseconds to a datetime object
-                            passed_at=datetime.fromtimestamp(filter_data['passed_at'] / 1000, timezone.utc),
+                            passed_at=datetime.fromtimestamp(
+                                filter_data["passed_at"] / 1000, timezone.utc
+                            ),
                             passing_alert_id=candid,
-                            uploader_id=1
+                            uploader_id=1,
                         )
                         session.add(candidate)
                         session.commit()
@@ -454,25 +557,21 @@ def main():
                     log(f"Skipping candidate with candid {candid}")
 
                 # for each filter we get the "annotations" which is a JSON string, we parse it
-                annotation_data = json.loads(filter_data['annotations'])
+                annotation_data = json.loads(filter_data["annotations"])
 
-                group_name = filt['group'].get('nickname')
-                if group_name is None: # if nickname is not present, use the name
-                    group_name = filt['group']['name']
+                group_name = filt["group"].get("nickname")
+                if group_name is None:  # if nickname is not present, use the name
+                    group_name = filt["group"]["name"]
                 origin = f"{group_name}:{filt['name']}"
 
                 existing_annotation = session.scalar(
                     sa.select(Annotation).filter(
-                        Annotation.obj_id == obj_id,
-                        Annotation.origin == origin
+                        Annotation.obj_id == obj_id, Annotation.origin == origin
                     )
                 )
                 if existing_annotation is None:
                     annotation = Annotation(
-                        obj=obj,
-                        data=annotation_data,
-                        origin=origin,
-                        author_id=1
+                        obj=obj, data=annotation_data, origin=origin, author_id=1
                     )
                     session.add(annotation)
                     log(f"Created annotation with origin {origin}")
@@ -484,18 +583,18 @@ def main():
             session.commit()
 
             ingest_photometry_array(
-                record.get('photometry', []),
+                record.get("photometry", []),
                 obj_id,
                 user,
                 session,
                 programid2streamid,
                 survey2instrumentid,
             )
-            
+
             session.commit()
 
             # Ingest cross-survey matches (object + photometry), if provided.
-            survey_matches = record.get('survey_matches', {})
+            survey_matches: dict[str, dict] = record.get("survey_matches", {})
             if isinstance(survey_matches, dict):
                 for match_survey, match in survey_matches.items():
                     if match is None:
@@ -504,23 +603,33 @@ def main():
                     # so let's skip those just in case
                     if match_survey.upper() == survey.upper():
                         continue
-                
+
                     if not isinstance(match, dict):
                         continue
 
-                    match_obj_id = match['objectId']
+                    match_obj_id = match["objectId"]
 
-                    _, _ = get_or_create_object(
+                    _, match_obj_created = get_or_create_object(
                         match_obj_id,
-                        match['ra'],
-                        match['dec'],
+                        match["ra"],
+                        match["dec"],
                         session,
                     )
 
                     # TODO: grab the cutouts for the match object (if newly added) from the BOOM API
+                    if match_obj_created:
+                        try:
+                            cutouts = boom_client.get_cutouts_by_object_id(
+                                match_survey, match_obj_id
+                            )
+                            add_thumbnails(cutouts, match_survey.upper(), session)
+                        except Exception as e:
+                            log(
+                                f"Failed to get cutouts for match object {match_obj_id} from survey {match_survey}: {e}"
+                            )
 
                     ingest_photometry_array(
-                        match['photometry'],
+                        match["photometry"],
                         match_obj_id,
                         user,
                         session,
