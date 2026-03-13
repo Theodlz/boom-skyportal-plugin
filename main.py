@@ -46,6 +46,9 @@ log = make_log("boom")
 init_db(**cfg["database"])
 
 params = cfg.get("services.external.boom.params", {})
+kafka_params = params.get("kafka", {})
+api_params = params.get("api", {})
+
 thumbnail_types = [
     ("cutoutScience", "new"),
     ("cutoutTemplate", "ref"),
@@ -53,6 +56,11 @@ thumbnail_types = [
 ]
 
 ZP_PER_SURVEY = {"LSST": 8.9, "ZTF": 23.9}
+
+# We will populate this with filter ids that come from BOOM, but that are not in the database yet.
+# that way we can update filter lists when we encounter new ones from BOOM, but stop doing it for those that
+# we know are not in the database (e.g. because they have not been added through this SkyPortal instance)
+EXTERNAL_FILTER_IDS = set()
 
 
 class BoomAPIClient:
@@ -405,14 +413,27 @@ def make_survey2instrumentid(session: Session):
     survey2instrumentid = {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
     return survey2instrumentid
 
+def make_boom_filters(session: Session):
+    # get all filters
+    all_filters = session.scalars(sa.select(Filter)).all()
+    # only keep those where the Filter `altdata` has a boom key
+    boom_filters: list[Filter] = [
+        f for f in all_filters if f.altdata is not None and "boom" in f.altdata
+    ]
+    boom_filters = {
+        f.altdata["boom"]["filter_id"]: {**f.to_dict(), "group": f.group.to_dict()}
+        for f in boom_filters
+    }
+    return boom_filters
+
 
 def main():
     boom_client = BoomAPIClient(
-        protocol=params.get("api_protocol", "https"),
-        host=params.get("api_host", "api.kaboom.caltech.edu"),
-        port=params.get("api_port", None),
-        username=params.get("api_username", ""),
-        password=params.get("api_password", ""),
+        protocol=api_params.get("protocol", "https"),
+        host=api_params.get("host", "api.kaboom.caltech.edu"),
+        port=api_params.get("port", None),
+        username=api_params.get("username", ""),
+        password=api_params.get("password", ""),
     )
 
     # first let's grab the instrument id for ZTF from the database
@@ -428,24 +449,12 @@ def main():
             return
         programid2streamid = make_programid2stream_mapper(session)
 
-        # get all filters
-        all_filters = session.scalars(sa.select(Filter)).all()
-        # only keep those where the Filter `altdata` has a boom key
-        boom_filters: list[Filter] = [
-            f for f in all_filters if f.altdata is not None and "boom" in f.altdata
-        ]
-        boom_filters = {
-            f.altdata["boom"]["filter_id"]: {**f.to_dict(), "group": f.group.to_dict()}
-            for f in boom_filters
-        }
-        if not boom_filters:
-            log("No boom filters found")
-            return
+    boom_filters = make_boom_filters(session)
 
     # TODO: validate params
     kafka_config = {
-        "bootstrap.servers": f"{params.get('kafka_host', 'localhost')}:{params.get('kafka_port', 9092)}",  # Kafka server and port
-        "group.id": params.get("kafka_group_id", "my_group"),  # Consumer group ID
+        "bootstrap.servers": f"{kafka_params.get('host', 'localhost')}:{kafka_params.get('port', 9092)}",  # Kafka server and port
+        "group.id": kafka_params.get("group_id", "my_group"),  # Consumer group ID
         "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
         "session.timeout.ms": 6000,  # Session timeout for the consumer
@@ -454,10 +463,10 @@ def main():
     }
 
     kafka_username, kafka_password = (
-        params.get("kafka_username"),
-        params.get("kafka_password"),
+        kafka_params.get("username"),
+        kafka_params.get("password"),
     )
-    kafka_sasl_mechanism = params.get("kafka_sasl_mechanism", "PLAIN")
+    kafka_sasl_mechanism = kafka_params.get("sasl_mechanism", "PLAIN")
     if kafka_username and kafka_password:
         # validate that sasl mechanism is one of the supported ones
         if kafka_sasl_mechanism not in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]:
@@ -478,14 +487,14 @@ def main():
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
     # Subscribe to the topic ZTF_alerts_results
-    topic_names = params.get(
+    topic_names = kafka_params.get(
         "topics", ["ZTF_alerts_results", "LSST_alerts_results"]
     )  # Replace with your topic names
     consumer.subscribe(topic_names)  # Subscribe to the topics
     log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
     while True:
-        msg = consumer.poll(timeout=10.0)
+        msg = consumer.poll(timeout=30.0)
         if msg is None:
             log("No message received within the timeout period.")
             continue
@@ -531,8 +540,18 @@ def main():
             for filter_data in record["filters"]:
                 filt = boom_filters.get(filter_data["filter_id"])
                 if filt is None:
-                    log(f"Filter with id {filter_data['filter_id']} does not exist")
-                    continue
+                    # if filter_data["filter_id"] is in the EXTERNAL_FILTER_IDS set, it means
+                    # we know this filter is not in the database, so we skip it without logging
+                    if filter_data["filter_id"] in EXTERNAL_FILTER_IDS:
+                        continue
+                    # else we try to refresh the filter list from the database, in case 
+                    # new filters have been added since the start of the program
+                    boom_filters = make_boom_filters(session)
+                    filt = boom_filters.get(filter_data["filter_id"])
+                    if filt is None:
+                        log(f"Filter with id {filter_data['filter_id']} does not exist in SkyPortal")
+                        EXTERNAL_FILTER_IDS.add(filter_data["filter_id"])
+                        continue
                 if filt["id"] not in passed_filter_ids:
                     # create the candidate if it's not already created
                     try:
