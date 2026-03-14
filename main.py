@@ -57,6 +57,7 @@ thumbnail_types = [
 ]
 
 ZP_PER_SURVEY = {"LSST": 8.9, "ZTF": 23.9}
+SNT = 3 # signal-to-noise threshold below which we set the flux to None
 
 # We will populate this with filter ids that come from BOOM, but that are not in the database yet.
 # that way we can update filter lists when we encounter new ones from BOOM, but stop doing it for those that
@@ -229,9 +230,15 @@ def ingest_photometry_array(
         photometry_data[key]["mjd"].append(phot["jd"] - 2400000.5)
         flux = phot["flux"]
         if flux is not None and not np.isnan(flux):
-            flux = flux * 1e-9
+            flux = flux * 1e-9  # convert from nJy to Jy
+        flux_err = phot["flux_err"] * 1e-9  # convert from nJy to Jy
+
+        # if the signal-to-noise ratio is below the threshold, we set the flux to None 
+        # to avoid ingesting unreliable photometry shown as detections
+        if flux is not None and abs(flux / flux_err) < SNT:
+            flux = None
         photometry_data[key]["flux"].append(flux)
-        photometry_data[key]["fluxerr"].append(phot["flux_err"] * 1e-9)
+        photometry_data[key]["fluxerr"].append(flux_err)
         photometry_data[key]["filter"].append(phot["band"])
         photometry_data[key]["zp"].append(ZP_PER_SURVEY[survey])
         photometry_data[key]["magsys"].append("ab")
