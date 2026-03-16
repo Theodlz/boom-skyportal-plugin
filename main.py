@@ -700,7 +700,7 @@ def main():
                         )
                         session.add(match_obj_to_superobj)
 
-                    log(f"Created super object with id {super_obj.id} and associated objects {obj_id} and {associated_with}")
+                    log(f"Created super object with id {super_obj.id} and associated {obj_id} with matches: {', '.join(sorted(associated_with))}")
                 else:
                     # if the super object already exists, we just need to associate the matches with it (the main object is already associated)
                     existing_associations_obj_ids = session.scalars(
@@ -715,7 +715,7 @@ def main():
                         )
                         session.add(match_obj_to_superobj)
                     if new_associated_obj_ids:
-                        log(f"Updated super object with id {super_obj.id} and associated new objects: {', '.join(new_associated_obj_ids)}")
+                        log(f"Updated super object with id {super_obj.id} to associate {obj_id} with new matches: {', '.join(sorted(new_associated_obj_ids))}")
             session.commit()
 
 
