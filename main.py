@@ -34,6 +34,8 @@ from skyportal.models import (
     Filter,
     Instrument,
     Obj,
+    ObjToSuperObj,
+    SuperObj,
     Stream,
     User,
 )
@@ -633,6 +635,7 @@ def main():
 
             # Ingest cross-survey matches (object + photometry), if provided.
             survey_matches: dict[str, dict] = record.get("survey_matches", {})
+            associated_with = set()
             if isinstance(survey_matches, dict):
                 for match_survey, match in survey_matches.items():
                     if match is None:
@@ -675,6 +678,44 @@ def main():
                         survey2instrumentid,
                     )
 
+                    associated_with.add(match_obj_id)
+
+            if associated_with:
+                # first we check if this object is already part of a super object
+                super_obj = session.scalar(
+                    sa.select(SuperObj).join(ObjToSuperObj).where(ObjToSuperObj.obj_id == obj_id)
+                )
+                if super_obj is None:
+                    # if not, we create a new super object and associate the main object and the matches with it
+                    super_obj = SuperObj()
+                    session.add(super_obj)
+                    session.flush()  # flush to get the super_obj.id
+
+                    obj_to_superobj = ObjToSuperObj(obj_id=obj_id, superobj_id=super_obj.id)
+                    session.add(obj_to_superobj)
+
+                    for match_obj_id in associated_with:
+                        match_obj_to_superobj = ObjToSuperObj(
+                            obj_id=match_obj_id, superobj_id=super_obj.id
+                        )
+                        session.add(match_obj_to_superobj)
+
+                    log(f"Created super object with id {super_obj.id} and associated objects {obj_id} and {associated_with}")
+                else:
+                    # if the super object already exists, we just need to associate the matches with it (the main object is already associated)
+                    existing_associations_obj_ids = session.scalars(
+                        sa.select(ObjToSuperObj.obj_id).where(
+                            ObjToSuperObj.superobj_id == super_obj.id,
+                        )
+                    ).all()
+                    new_associated_obj_ids = associated_with - set(existing_associations_obj_ids)
+                    for match_obj_id in new_associated_obj_ids:
+                        match_obj_to_superobj = ObjToSuperObj(
+                            obj_id=match_obj_id, superobj_id=super_obj.id
+                        )
+                        session.add(match_obj_to_superobj)
+                    if new_associated_obj_ids:
+                        log(f"Updated super object with id {super_obj.id} and associated new objects: {', '.join(new_associated_obj_ids)}")
             session.commit()
 
 
