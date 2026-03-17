@@ -593,7 +593,7 @@ def main():
                 annotation_data = json.loads(filter_data["annotations"])
 
                 group_name = filt["group"].get("nickname")
-                if group_name is None:  # if nickname is not present, use the name
+                if group_name is None: # if nickname is not present, use the name
                     group_name = filt["group"]["name"]
                 origin = f"{group_name}:{filt['name']}"
 
