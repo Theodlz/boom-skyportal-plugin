@@ -293,8 +293,8 @@ def make_thumbnail(
     if img[xl].any():
         img[xl] = np.nan
     if np.isnan(img).any():
-        median = float(np.nanmean(img.flatten()))
-        img = np.nan_to_num(img, nan=median)
+        mean = float(np.nanmean(img.flatten()))
+        img = np.nan_to_num(img, nan=mean)
 
     # Normalize
     stretch = LinearStretch() if cutout_type == "cutoutDifference" else LogStretch()
@@ -534,7 +534,6 @@ def main():
                 session.rollback()
                 continue
             if obj_created:
-                # add thumbnails
                 add_thumbnails(record, survey, session)
             else:
                 log(f"Object with id {obj_id} already exists")
@@ -586,8 +585,6 @@ def main():
                         continue
                     created_candidates = True
                     log(f"Created candidate with candid {candid}")
-                else:
-                    log(f"Skipping candidate with candid {candid}")
 
                 # for each filter we get the "annotations" which is a JSON string, we parse it
                 annotation_data = json.loads(filter_data["annotations"])
@@ -658,7 +655,7 @@ def main():
                             cutouts = boom_client.get_cutouts_by_object_id(
                                 match_survey, match_obj_id
                             )
-                            add_thumbnails(cutouts, match_survey.upper(), session)
+                            add_thumbnails(cutouts, match_survey, session)
                         except Exception as e:
                             log(
                                 f"Failed to get cutouts for match object {match_obj_id} from survey {match_survey}: {e}"
