@@ -362,18 +362,22 @@ def read_avro(msg):
     """
     Reads an Avro file and returns the first record
 
-    Args:
-        file_path (str): The path to the Avro file.
+    Parameters
+    ----------
+    msg : confluent_kafka.Message
+        The Kafka message containing the Avro file in its value
 
-    Returns:
-        dict: The record read from the Avro file, or None if an error occurs.
+    Returns
+    -------
+    dict or None
+        The first record found in the Avro file, or None if no records are found
     """
 
     bytes_io = io.BytesIO(msg.value())  # Get the message value as bytes
     bytes_io.seek(0)
     for record in fastavro.reader(bytes_io):
-        return record  # Return the first record found
-    return None  # Return None if no records are found or if an error occurs
+        return record
+    return None
 
 
 def make_programid2stream_mapper(session: Session):
