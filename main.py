@@ -523,19 +523,19 @@ def main():
 
         with DBSession() as session:
             obj_id = record["objectId"]
-            survey = record["survey"]
+            survey = record["survey"].upper()
             obj, obj_created = get_or_create_object(
                 obj_id,
                 record["ra"],
                 record["dec"],
-                session,
+                session
             )
             if obj is None:
                 session.rollback()
                 continue
             if obj_created:
                 # add thumbnails
-                add_thumbnails(record, survey.upper(), session)
+                add_thumbnails(record, survey, session)
             else:
                 log(f"Object with id {obj_id} already exists")
 
