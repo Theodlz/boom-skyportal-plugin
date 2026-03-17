@@ -71,7 +71,7 @@ class BoomAPIClient:
     def __init__(
         self, protocol: str, host: str, port: int | None, username: str, password: str
     ):
-        self.base_url = f"{protocol}://{host}:{port}"
+        self.base_url = f"{protocol}://{host}{f':{port}' if port is not None else ''}"
         self.username = username
         self.password = password
         self.token = None
