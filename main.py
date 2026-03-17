@@ -569,21 +569,20 @@ def main():
                 if filt["id"] not in passed_filter_ids:
                     # create the candidate if it's not already created
                     try:
-                        candidate = Candidate(
-                            obj=obj,
-                            filter_id=filt["id"],
-                            # convert passed_at from a timestamp in milliseconds to a datetime object
-                            passed_at=datetime.fromtimestamp(
-                                filter_data["passed_at"] / 1000, timezone.utc
-                            ),
-                            passing_alert_id=candid,
-                            uploader_id=1,
-                        )
-                        session.add(candidate)
-                        session.commit()
+                        with session.begin_nested():
+                            candidate = Candidate(
+                                obj=obj,
+                                filter_id=filt["id"],
+                                # convert passed_at from a timestamp in milliseconds to a datetime object
+                                passed_at=datetime.fromtimestamp(
+                                    filter_data["passed_at"] / 1000, timezone.utc
+                                ),
+                                passing_alert_id=candid,
+                                uploader_id=1
+                            )
+                            session.add(candidate)
                     except Exception as e:
                         log(f"Error creating candidate with candid {candid}: {e}")
-                        session.rollback()
                         continue
                     created_candidates = True
                     log(f"Created candidate with candid {candid}")
