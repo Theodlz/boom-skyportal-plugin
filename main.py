@@ -462,7 +462,7 @@ def main():
             return
         programid2streamid = make_programid2stream_mapper(session)
 
-    boom_filters = make_boom_filters(session)
+        boom_filters = make_boom_filters(session)
 
     # TODO: validate params
     kafka_config = {
