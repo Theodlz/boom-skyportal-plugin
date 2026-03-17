@@ -470,7 +470,7 @@ def main():
         "group.id": kafka_params.get("group_id", "my_group"),  # Consumer group ID
         "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
-        "session.timeout.ms": 6000,  # Session timeout for the consumer
+        "session.timeout.ms": 15000,  # Session timeout for the consumer
         "max.poll.interval.ms": 300000,  # Maximum time between polls
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
