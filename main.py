@@ -494,10 +494,7 @@ def main():
             }
         )
 
-    print(
-        f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})"
-    )
-    # Create a Kafka consumer instance with the configuration
+    log(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
     consumer = Consumer(kafka_config)
     topic_names = kafka_params.get("topics", ["ZTF_alerts_results", "LSST_alerts_results"])
     consumer.subscribe(topic_names)
