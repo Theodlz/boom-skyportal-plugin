@@ -585,28 +585,33 @@ def main():
                     log(f"Created candidate with candid {candid}")
 
                 # for each filter we get the "annotations" which is a JSON string, we parse it
-                annotation_data = json.loads(filter_data["annotations"])
+                try:
+                    with session.begin_nested():
+                        annotation_data = json.loads(filter_data["annotations"])
 
-                group_name = filt["group"].get("nickname")
-                if group_name is None: # if nickname is not present, use the name
-                    group_name = filt["group"]["name"]
-                origin = f"{group_name}:{filt['name']}"
+                        group_name = filt["group"].get("nickname")
+                        if group_name is None: # if nickname is not present, use the name
+                            group_name = filt["group"]["name"]
+                        origin = f"{group_name}:{filt['name']}"
 
-                existing_annotation = session.scalar(
-                    sa.select(Annotation).filter(
-                        Annotation.obj_id == obj_id, Annotation.origin == origin
-                    )
-                )
-                if existing_annotation is None:
-                    annotation = Annotation(
-                        obj=obj, data=annotation_data, origin=origin, author_id=1
-                    )
-                    session.add(annotation)
-                    log(f"Created annotation with origin {origin}")
-                else:
-                    # we update the data of the annotation
-                    existing_annotation.data = annotation_data
-                    log(f"Updated annotation with origin {origin}")
+                        existing_annotation = session.scalar(
+                            sa.select(Annotation).filter(
+                                Annotation.obj_id == obj_id, Annotation.origin == origin
+                            )
+                        )
+                        if existing_annotation is None:
+                            annotation = Annotation(
+                                obj=obj, data=annotation_data, origin=origin, author_id=1
+                            )
+                            session.add(annotation)
+                            log(f"Created annotation with origin {origin}")
+                        else:
+                            # we update the data of the annotation
+                            existing_annotation.data = annotation_data
+                            log(f"Updated annotation with origin {origin}")
+                except Exception as e:
+                    log(f"Error processing annotation for object {obj_id} and filter {filter_data.get('filter_id')}: {e}")
+                    continue
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
