@@ -521,6 +521,10 @@ def main():
         # Successfully received a message
         record = read_avro(msg)
 
+        if record is None:
+            log("No record found in the Avro message")
+            continue
+
         with DBSession() as session:
             obj_id = record["objectId"]
             survey = record["survey"].upper()
@@ -530,9 +534,6 @@ def main():
                 record["dec"],
                 session
             )
-            if obj is None:
-                session.rollback()
-                continue
             if obj_created:
                 add_thumbnails(record, survey, session)
             else:
