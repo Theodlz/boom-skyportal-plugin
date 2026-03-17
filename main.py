@@ -116,7 +116,7 @@ class BoomAPIClient:
         if response.status_code == 401:
             log("Token expired or invalid, refreshing token")
             self.token = None
-            token = self.get_token()
+            self.get_token()
             return self.get_cutouts_by_object_id(survey, object_id)
         response.raise_for_status()
         if "data" not in response.json():
@@ -159,6 +159,17 @@ def get_or_create_object(obj_id, ra, dec, session: Session) -> tuple[Obj, bool]:
     session.add(obj)
     log(f"Created object with id {obj_id}")
     return obj, True
+
+
+def boom_origin_to_skyportal_origin(boom_origin):
+    # Convert the photometry origin from Boom format to SkyPortal format
+    # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
+    if boom_origin == "Alert":
+        return None
+    elif boom_origin == "ForcedPhot":
+        return "alert_fp"
+    else:
+        raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
 
 
 def ingest_photometry_array(
@@ -235,7 +246,7 @@ def ingest_photometry_array(
             flux = flux * 1e-9  # convert from nJy to Jy
         flux_err = phot["flux_err"] * 1e-9  # convert from nJy to Jy
 
-        # if the signal-to-noise ratio is below the threshold, we set the flux to None 
+        # if the signal-to-noise ratio is below the threshold, we set the flux to None
         # to avoid ingesting unreliable photometry shown as detections
         if flux is not None and abs(flux / flux_err) < SNT:
             flux = None
@@ -252,22 +263,11 @@ def ingest_photometry_array(
         add_external_photometry(data, user, session)
 
 
-def boom_origin_to_skyportal_origin(boom_origin):
-    # Convert the photometry origin from Boom format to SkyPortal format
-    # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
-    if boom_origin == "Alert":
-        return None
-    elif boom_origin == "ForcedPhot":
-        return "alert_fp"
-    else:
-        raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
-
-
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
     rotpa = None
-    if survey == "LSST":  # LSST uses no compression
+    if survey == "LSST": # LSST uses no compression
         with fits.open(io.BytesIO(cutout_data), ignore_missing_simple=True) as hdu:
             rotpa = hdu[0].header.get("ROTPA", None)
             data = hdu[0].data
@@ -289,7 +289,7 @@ def make_thumbnail(
 
     # Clean the data
     img = np.array(data)
-    xl = np.greater(np.abs(img), 1e20, where=~np.isnan(img))
+    xl = np.greater(np.abs(img), 1e20, out=np.zeros(img.shape, dtype=bool), where=~np.isnan(img))
     if img[xl].any():
         img[xl] = np.nan
     if np.isnan(img).any():
@@ -349,7 +349,7 @@ def add_thumbnails(alert, survey, session):
                 alert[cutout_type],
                 cutout_type,
                 thumbnail_type,
-                survey,
+                survey
             )
         except Exception as e:
             traceback.print_exc()
@@ -420,14 +420,12 @@ def make_survey2instrumentid(session: Session):
     )
     if lsst_instrument_id is None:
         raise ValueError("Instrument LSST not found in the database")
-    survey2instrumentid = {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
-    return survey2instrumentid
+    return {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
 
 
 def make_boom_filters(session: Session):
-    # get all filters
     all_filters = session.scalars(sa.select(Filter)).all()
-    # only keep those where the Filter `altdata` has a boom key
+    # only keep Filters where `altdata` has a boom key
     boom_filters: list[Filter] = [
         f for f in all_filters if f.altdata is not None and "boom" in f.altdata
     ]
@@ -497,17 +495,17 @@ def main():
     )
     # Create a Kafka consumer instance with the configuration
     consumer = Consumer(kafka_config)
-    # Subscribe to the topic ZTF_alerts_results
-    topic_names = kafka_params.get(
-        "topics", ["ZTF_alerts_results", "LSST_alerts_results"]
-    )  # Replace with your topic names
-    consumer.subscribe(topic_names)  # Subscribe to the topics
+    topic_names = kafka_params.get("topics", ["ZTF_alerts_results", "LSST_alerts_results"])
+    consumer.subscribe(topic_names)
     log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
+    is_empty_poll_logged = False
     while True:
         msg = consumer.poll(timeout=30.0)
         if msg is None:
-            log("No message received within the timeout period.")
+            if not is_empty_poll_logged: # only log the first time we get an empty poll to avoid spamming the logs
+                log("No message received within the timeout period.")
+                is_empty_poll_logged = True
             continue
         if msg.error():
             # Handle any errors
@@ -517,6 +515,7 @@ def main():
             else:
                 log(f"Error: {msg.error()}")
                 continue
+        is_empty_poll_logged = False # reset the flag when we successfully receive a message
 
         # Successfully received a message
         record = read_avro(msg)
@@ -638,14 +637,10 @@ def main():
             associated_with = set()
             if isinstance(survey_matches, dict):
                 for match_survey, match in survey_matches.items():
-                    if match is None:
-                        continue
+                    match_survey = match_survey.upper()
                     # we never have matches with the same survey as the main object,
                     # so let's skip those just in case
-                    if match_survey.upper() == survey.upper():
-                        continue
-
-                    if not isinstance(match, dict):
+                    if match is None or match_survey == survey or not isinstance(match, dict):
                         continue
 
                     match_obj_id = match["objectId"]
