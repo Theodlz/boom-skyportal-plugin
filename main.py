@@ -612,10 +612,7 @@ def main():
                     log(f"Updated annotation with origin {origin}")
 
             if not created_candidates:
-                log(
-                    f"No new candidates created for object {obj_id} with candid {candid}"
-                )
-                continue
+                log(f"No new candidates created for object {obj_id} with candid {candid}")
 
             session.commit()
 
