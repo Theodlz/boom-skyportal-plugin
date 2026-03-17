@@ -389,9 +389,6 @@ def make_programid2stream_mapper(session: Session):
     streams = session.scalars(sa.select(Stream)).all()
     mapper = {}
     for stream in streams:
-        if stream is None:
-            log("Warning: Stream is None, skipping")
-            continue
         altdata = stream.altdata
         if (
             not isinstance(altdata, dict)
