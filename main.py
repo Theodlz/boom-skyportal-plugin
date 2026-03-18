@@ -682,12 +682,12 @@ def main():
                     session.add(super_obj)
                     session.flush()  # flush to get the super_obj.id
 
-                    obj_to_superobj = ObjToSuperObj(obj_id=obj_id, superobj_id=super_obj.id)
+                    obj_to_superobj = ObjToSuperObj(obj_id=obj_id, super_obj_id=super_obj.id)
                     session.add(obj_to_superobj)
 
                     for match_obj_id in associated_with:
                         match_obj_to_superobj = ObjToSuperObj(
-                            obj_id=match_obj_id, superobj_id=super_obj.id
+                            obj_id=match_obj_id, super_obj_id=super_obj.id
                         )
                         session.add(match_obj_to_superobj)
 
@@ -696,13 +696,13 @@ def main():
                     # if the super object already exists, we just need to associate the matches with it (the main object is already associated)
                     existing_associations_obj_ids = session.scalars(
                         sa.select(ObjToSuperObj.obj_id).where(
-                            ObjToSuperObj.superobj_id == super_obj.id,
+                            ObjToSuperObj.super_obj_id == super_obj.id,
                         )
                     ).all()
                     new_associated_obj_ids = associated_with - set(existing_associations_obj_ids)
                     for match_obj_id in new_associated_obj_ids:
                         match_obj_to_superobj = ObjToSuperObj(
-                            obj_id=match_obj_id, superobj_id=super_obj.id
+                            obj_id=match_obj_id, super_obj_id=super_obj.id
                         )
                         session.add(match_obj_to_superobj)
                     if new_associated_obj_ids:
