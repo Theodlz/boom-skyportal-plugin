@@ -578,11 +578,10 @@ def main():
                                 uploader_id=1
                             )
                             session.add(candidate)
+                            created_candidates = True
+                            log(f"Created candidate with candid {candid}")
                     except Exception as e:
                         log(f"Error creating candidate with candid {candid}: {e}")
-                        continue
-                    created_candidates = True
-                    log(f"Created candidate with candid {candid}")
 
                 # for each filter we get the "annotations" which is a JSON string, we parse it
                 try:
