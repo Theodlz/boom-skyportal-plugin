@@ -622,7 +622,6 @@ def main():
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
-                continue
 
             if obj_created:
                 add_thumbnails(record, survey, session)
