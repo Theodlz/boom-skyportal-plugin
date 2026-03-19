@@ -568,27 +568,29 @@ def main():
                         )
                         EXTERNAL_FILTER_IDS.add(filter_data["filter_id"])
                         continue
-                if filt["id"] not in passed_filter_ids:
-                    # create the candidate if it's not already created
-                    try:
-                        with session.begin_nested():
-                            candidate = Candidate(
-                                obj=obj,
-                                filter_id=filt["id"],
-                                # convert passed_at from a timestamp in milliseconds to a datetime object
-                                passed_at=datetime.fromtimestamp(
-                                    filter_data["passed_at"] / 1000, timezone.utc
-                                ),
-                                passing_alert_id=candid,
-                                uploader_id=1
-                            )
-                            session.add(candidate)
-                            created_candidates = True
-                            log(f"Created candidate with candid {candid}")
-                    except Exception as e:
-                        log(f"Error creating candidate with candid {candid}: {e}")
+                if filt["id"] in passed_filter_ids:
+                    continue
 
-                # for each filter we get the "annotations" which is a JSON string, we parse it
+                # create the candidate if it has not been created yet for this filter and this candid
+                try:
+                    with session.begin_nested():
+                        candidate = Candidate(
+                            obj=obj,
+                            filter_id=filt["id"],
+                            # convert passed_at from a timestamp in milliseconds to a datetime object
+                            passed_at=datetime.fromtimestamp(
+                                filter_data["passed_at"] / 1000, timezone.utc
+                            ),
+                            passing_alert_id=candid,
+                            uploader_id=1
+                        )
+                        session.add(candidate)
+                except Exception as e:
+                    log(f"Error creating candidate with candid {candid} and filter {filt["id"]}: {e}")
+                    continue # If the candidate is not created successfully, we skip the annotation creation
+
+                created_candidates = True
+                log(f"Created candidate with candid {candid}")
                 try:
                     with session.begin_nested():
                         annotation_data = json.loads(filter_data["annotations"])
@@ -614,11 +616,11 @@ def main():
                             existing_annotation.data = annotation_data
                             log(f"Updated annotation with origin {origin}")
                 except Exception as e:
-                    log(f"Error processing annotation for object {obj_id} and filter {filter_data.get('filter_id')}: {e}")
-                    continue
+                    log(f"Error processing annotation for object {obj_id} and filter {filt["id"]}: {e}")
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
+                continue
 
             session.commit()
 
