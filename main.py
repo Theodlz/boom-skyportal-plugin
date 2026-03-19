@@ -467,7 +467,7 @@ def main():
         "group.id": kafka_params.get("group_id", "my_group"),  # Consumer group ID
         "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
-        "session.timeout.ms": 15000,  # Session timeout for the consumer
+        "session.timeout.ms": 45000,  # Session timeout for the consumer
         "max.poll.interval.ms": 300000,  # Maximum time between polls
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
@@ -586,7 +586,7 @@ def main():
                         )
                         session.add(candidate)
                 except Exception as e:
-                    log(f"Error creating candidate with candid {candid} and filter {filt["id"]}: {e}")
+                    log(f"Error creating candidate with candid {candid} and filter {filt['id']}: {e}")
                     continue # If the candidate is not created successfully, we skip the annotation creation
 
                 created_candidates = True
@@ -616,7 +616,7 @@ def main():
                             existing_annotation.data = annotation_data
                             log(f"Updated annotation with origin {origin}")
                 except Exception as e:
-                    log(f"Error processing annotation for object {obj_id} and filter {filt["id"]}: {e}")
+                    log(f"Error processing annotation for object {obj_id} and filter {filt['id']}: {e}")
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
