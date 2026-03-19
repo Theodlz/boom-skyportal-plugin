@@ -498,7 +498,12 @@ def main():
     log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
     is_empty_poll_logged = False
+    heartbeat = datetime.now()
     while True:
+        if datetime.now() - heartbeat > timedelta(seconds=60):
+            heartbeat = datetime.now()
+            log("Boom listener heartbeat.")
+
         msg = consumer.poll(timeout=30.0)
         if msg is None:
             if not is_empty_poll_logged: # only log the first time we get an empty poll to avoid spamming the logs
