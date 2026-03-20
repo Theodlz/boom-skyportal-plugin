@@ -71,7 +71,7 @@ class BoomAPIClient:
     def __init__(
         self, protocol: str, host: str, port: int | None, username: str, password: str
     ):
-        self.base_url = f"{protocol}://{host}:{port}"
+        self.base_url = f"{protocol}://{host}{f':{port}' if port is not None else ''}"
         self.username = username
         self.password = password
         self.token = None
@@ -103,26 +103,32 @@ class BoomAPIClient:
         return self.token
 
     def get_cutouts_by_object_id(self, survey: str, object_id: str):
-        token = self.get_token()
-        response = requests.get(
-            f"{self.base_url}/surveys/{survey.upper()}/cutouts",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            params={"objectId": object_id},
-        )
-        # if the response is a 401, it means the token is invalid, so we refresh the token and try again once
-        if response.status_code == 401:
-            log("Token expired or invalid, refreshing token")
-            self.token = None
+        for attempt in range(2):
             token = self.get_token()
-            return self.get_cutouts_by_object_id(survey, object_id)
+            response = requests.get(
+                f"{self.base_url}/surveys/{survey.upper()}/cutouts",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                params={"objectId": object_id},
+            )
+            if response.status_code != 401:
+                break
+            # if the response is a 401, it means the token is invalid, so we refresh the token and try again once
+            if attempt == 0:
+                log("Token expired or invalid, refreshing token")
+                self.token = None
+
         response.raise_for_status()
         if "data" not in response.json():
             raise ValueError(f"Unexpected response format: {response.json()}")
         data = response.json()["data"]
         data["objectId"] = object_id
+        # API returns cutouts as base64 strings; decode to bytes for consistency with Avro records
+        for key in ("cutoutScience", "cutoutTemplate", "cutoutDifference"):
+            if key in data and isinstance(data[key], str):
+                data[key] = base64.b64decode(data[key])
         return data
 
 
@@ -159,6 +165,17 @@ def get_or_create_object(obj_id, ra, dec, session: Session) -> tuple[Obj, bool]:
     session.add(obj)
     log(f"Created object with id {obj_id}")
     return obj, True
+
+
+def boom_origin_to_skyportal_origin(boom_origin):
+    # Convert the photometry origin from Boom format to SkyPortal format
+    # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
+    if boom_origin == "Alert":
+        return None
+    elif boom_origin == "ForcedPhot":
+        return "alert_fp"
+    else:
+        raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
 
 
 def ingest_photometry_array(
@@ -235,7 +252,7 @@ def ingest_photometry_array(
             flux = flux * 1e-9  # convert from nJy to Jy
         flux_err = phot["flux_err"] * 1e-9  # convert from nJy to Jy
 
-        # if the signal-to-noise ratio is below the threshold, we set the flux to None 
+        # if the signal-to-noise ratio is below the threshold, we set the flux to None
         # to avoid ingesting unreliable photometry shown as detections
         if flux is not None and abs(flux / flux_err) < SNT:
             flux = None
@@ -252,22 +269,11 @@ def ingest_photometry_array(
         add_external_photometry(data, user, session)
 
 
-def boom_origin_to_skyportal_origin(boom_origin):
-    # Convert the photometry origin from Boom format to SkyPortal format
-    # Boom is Alert or ForcedPhot, we want to convert it to None or "alert_fp"
-    if boom_origin == "Alert":
-        return None
-    elif boom_origin == "ForcedPhot":
-        return "alert_fp"
-    else:
-        raise ValueError(f"Unknown Boom photometry origin: {boom_origin}")
-
-
 def make_thumbnail(
     obj_id, cutout_data, cutout_type: str, thumbnail_type: str, survey: str
 ):
     rotpa = None
-    if survey == "LSST":  # LSST uses no compression
+    if survey == "LSST": # LSST uses no compression
         with fits.open(io.BytesIO(cutout_data), ignore_missing_simple=True) as hdu:
             rotpa = hdu[0].header.get("ROTPA", None)
             data = hdu[0].data
@@ -289,12 +295,12 @@ def make_thumbnail(
 
     # Clean the data
     img = np.array(data)
-    xl = np.greater(np.abs(img), 1e20, where=~np.isnan(img))
+    xl = np.greater(np.abs(img), 1e20, out=np.zeros(img.shape, dtype=bool), where=~np.isnan(img))
     if img[xl].any():
         img[xl] = np.nan
     if np.isnan(img).any():
-        median = float(np.nanmean(img.flatten()))
-        img = np.nan_to_num(img, nan=median)
+        mean = float(np.nanmean(img.flatten()))
+        img = np.nan_to_num(img, nan=mean)
 
     # Normalize
     stretch = LinearStretch() if cutout_type == "cutoutDifference" else LogStretch()
@@ -349,7 +355,7 @@ def add_thumbnails(alert, survey, session):
                 alert[cutout_type],
                 cutout_type,
                 thumbnail_type,
-                survey,
+                survey
             )
         except Exception as e:
             traceback.print_exc()
@@ -362,18 +368,22 @@ def read_avro(msg):
     """
     Reads an Avro file and returns the first record
 
-    Args:
-        file_path (str): The path to the Avro file.
+    Parameters
+    ----------
+    msg : confluent_kafka.Message
+        The Kafka message containing the Avro file in its value
 
-    Returns:
-        dict: The record read from the Avro file, or None if an error occurs.
+    Returns
+    -------
+    dict or None
+        The first record found in the Avro file, or None if no records are found
     """
 
     bytes_io = io.BytesIO(msg.value())  # Get the message value as bytes
     bytes_io.seek(0)
     for record in fastavro.reader(bytes_io):
-        return record  # Return the first record found
-    return None  # Return None if no records are found or if an error occurs
+        return record
+    return None
 
 
 def make_programid2stream_mapper(session: Session):
@@ -385,9 +395,6 @@ def make_programid2stream_mapper(session: Session):
     streams = session.scalars(sa.select(Stream)).all()
     mapper = {}
     for stream in streams:
-        if stream is None:
-            log("Warning: Stream is None, skipping")
-            continue
         altdata = stream.altdata
         if (
             not isinstance(altdata, dict)
@@ -420,14 +427,12 @@ def make_survey2instrumentid(session: Session):
     )
     if lsst_instrument_id is None:
         raise ValueError("Instrument LSST not found in the database")
-    survey2instrumentid = {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
-    return survey2instrumentid
+    return {"ZTF": ztf_instrument_id, "LSST": lsst_instrument_id}
 
 
 def make_boom_filters(session: Session):
-    # get all filters
     all_filters = session.scalars(sa.select(Filter)).all()
-    # only keep those where the Filter `altdata` has a boom key
+    # only keep Filters where `altdata` has a boom key
     boom_filters: list[Filter] = [
         f for f in all_filters if f.altdata is not None and "boom" in f.altdata
     ]
@@ -460,7 +465,7 @@ def main():
             return
         programid2streamid = make_programid2stream_mapper(session)
 
-    boom_filters = make_boom_filters(session)
+        boom_filters = make_boom_filters(session)
 
     # TODO: validate params
     kafka_config = {
@@ -468,7 +473,7 @@ def main():
         "group.id": kafka_params.get("group_id", "my_group"),  # Consumer group ID
         "auto.offset.reset": "earliest",  # Start reading from the earliest message (DEBUG)
         "enable.auto.commit": False,  # Disable auto-commit of offsets
-        "session.timeout.ms": 6000,  # Session timeout for the consumer
+        "session.timeout.ms": 45000,  # Session timeout for the consumer
         "max.poll.interval.ms": 300000,  # Maximum time between polls
         "security.protocol": "PLAINTEXT",  # Use PLAINTEXT if no authentication
     }
@@ -492,22 +497,24 @@ def main():
             }
         )
 
-    print(
-        f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})"
-    )
-    # Create a Kafka consumer instance with the configuration
+    log(f"Connecting to Kafka at {kafka_config['bootstrap.servers']} (group ID: {kafka_config['group.id']})")
     consumer = Consumer(kafka_config)
-    # Subscribe to the topic ZTF_alerts_results
-    topic_names = kafka_params.get(
-        "topics", ["ZTF_alerts_results", "LSST_alerts_results"]
-    )  # Replace with your topic names
-    consumer.subscribe(topic_names)  # Subscribe to the topics
+    topic_names = kafka_params.get("topics", ["ZTF_alerts_results", "LSST_alerts_results"])
+    consumer.subscribe(topic_names)
     log(f"Subscribed to topics: {topic_names}")
     # Poll for messages from the topic
+    is_empty_poll_logged = False
+    heartbeat = datetime.now()
     while True:
+        if datetime.now() - heartbeat > timedelta(seconds=60):
+            heartbeat = datetime.now()
+            log("Boom listener heartbeat.")
+
         msg = consumer.poll(timeout=30.0)
         if msg is None:
-            log("No message received within the timeout period.")
+            if not is_empty_poll_logged: # only log the first time we get an empty poll to avoid spamming the logs
+                log("No message received within the timeout period.")
+                is_empty_poll_logged = True
             continue
         if msg.error():
             # Handle any errors
@@ -517,27 +524,24 @@ def main():
             else:
                 log(f"Error: {msg.error()}")
                 continue
+        is_empty_poll_logged = False # reset the flag when we successfully receive a message
 
         # Successfully received a message
         record = read_avro(msg)
 
+        if record is None:
+            log("No record found in the Avro message")
+            continue
+
         with DBSession() as session:
             obj_id = record["objectId"]
-            survey = record["survey"]
+            survey = record["survey"].upper()
             obj, obj_created = get_or_create_object(
                 obj_id,
                 record["ra"],
                 record["dec"],
-                session,
+                session
             )
-            if obj is None:
-                session.rollback()
-                continue
-            if obj_created:
-                # add thumbnails
-                add_thumbnails(record, survey.upper(), session)
-            else:
-                log(f"Object with id {obj_id} already exists")
 
             # we checked which candidates are already created
             candid = record["candid"]
@@ -566,9 +570,12 @@ def main():
                         )
                         EXTERNAL_FILTER_IDS.add(filter_data["filter_id"])
                         continue
-                if filt["id"] not in passed_filter_ids:
-                    # create the candidate if it's not already created
-                    try:
+                if filt["id"] in passed_filter_ids:
+                    continue
+
+                # create the candidate if it has not been created yet for this filter and this candid
+                try:
+                    with session.begin_nested():
                         candidate = Candidate(
                             obj=obj,
                             filter_id=filt["id"],
@@ -577,48 +584,48 @@ def main():
                                 filter_data["passed_at"] / 1000, timezone.utc
                             ),
                             passing_alert_id=candid,
-                            uploader_id=1,
+                            uploader_id=1
                         )
                         session.add(candidate)
-                        session.commit()
-                    except Exception as e:
-                        log(f"Error creating candidate with candid {candid}: {e}")
-                        session.rollback()
-                        continue
-                    created_candidates = True
-                    log(f"Created candidate with candid {candid}")
-                else:
-                    log(f"Skipping candidate with candid {candid}")
+                except Exception as e:
+                    log(f"Error creating candidate with candid {candid} and filter {filt['id']}: {e}")
+                    continue # If the candidate is not created successfully, we skip the annotation creation
 
-                # for each filter we get the "annotations" which is a JSON string, we parse it
-                annotation_data = json.loads(filter_data["annotations"])
+                created_candidates = True
+                log(f"Created candidate with candid {candid}")
+                try:
+                    with session.begin_nested():
+                        annotation_data = json.loads(filter_data["annotations"])
 
-                group_name = filt["group"].get("nickname")
-                if group_name is None:  # if nickname is not present, use the name
-                    group_name = filt["group"]["name"]
-                origin = f"{group_name}:{filt['name']}"
+                        group_name = filt["group"].get("nickname")
+                        if group_name is None: # if nickname is not present, use the name
+                            group_name = filt["group"]["name"]
+                        origin = f"{group_name}:{filt['name']}"
 
-                existing_annotation = session.scalar(
-                    sa.select(Annotation).filter(
-                        Annotation.obj_id == obj_id, Annotation.origin == origin
-                    )
-                )
-                if existing_annotation is None:
-                    annotation = Annotation(
-                        obj=obj, data=annotation_data, origin=origin, author_id=1
-                    )
-                    session.add(annotation)
-                    log(f"Created annotation with origin {origin}")
-                else:
-                    # we update the data of the annotation
-                    existing_annotation.data = annotation_data
-                    log(f"Updated annotation with origin {origin}")
+                        existing_annotation = session.scalar(
+                            sa.select(Annotation).filter(
+                                Annotation.obj_id == obj_id, Annotation.origin == origin
+                            )
+                        )
+                        if existing_annotation is None:
+                            annotation = Annotation(
+                                obj=obj, data=annotation_data, origin=origin, author_id=1
+                            )
+                            session.add(annotation)
+                            log(f"Created annotation with origin {origin}")
+                        else:
+                            # we update the data of the annotation
+                            existing_annotation.data = annotation_data
+                            log(f"Updated annotation with origin {origin}")
+                except Exception as e:
+                    log(f"Error processing annotation for object {obj_id} and filter {filt['id']}: {e}")
 
             if not created_candidates:
-                log(
-                    f"No new candidates created for object {obj_id} with candid {candid}"
-                )
+                log(f"No new candidates created for object {obj_id} with candid {candid}")
                 continue
+
+            if obj_created:
+                add_thumbnails(record, survey, session)
 
             session.commit()
 
@@ -638,14 +645,10 @@ def main():
             associated_with = set()
             if isinstance(survey_matches, dict):
                 for match_survey, match in survey_matches.items():
-                    if match is None:
-                        continue
+                    match_survey = match_survey.upper()
                     # we never have matches with the same survey as the main object,
                     # so let's skip those just in case
-                    if match_survey.upper() == survey.upper():
-                        continue
-
-                    if not isinstance(match, dict):
+                    if match is None or match_survey == survey or not isinstance(match, dict):
                         continue
 
                     match_obj_id = match["objectId"]
@@ -663,7 +666,7 @@ def main():
                             cutouts = boom_client.get_cutouts_by_object_id(
                                 match_survey, match_obj_id
                             )
-                            add_thumbnails(cutouts, match_survey.upper(), session)
+                            add_thumbnails(cutouts, match_survey, session)
                         except Exception as e:
                             log(
                                 f"Failed to get cutouts for match object {match_obj_id} from survey {match_survey}: {e}"
@@ -691,12 +694,12 @@ def main():
                     session.add(super_obj)
                     session.flush()  # flush to get the super_obj.id
 
-                    obj_to_superobj = ObjToSuperObj(obj_id=obj_id, superobj_id=super_obj.id)
+                    obj_to_superobj = ObjToSuperObj(obj_id=obj_id, super_obj_id=super_obj.id)
                     session.add(obj_to_superobj)
 
                     for match_obj_id in associated_with:
                         match_obj_to_superobj = ObjToSuperObj(
-                            obj_id=match_obj_id, superobj_id=super_obj.id
+                            obj_id=match_obj_id, super_obj_id=super_obj.id
                         )
                         session.add(match_obj_to_superobj)
 
@@ -705,13 +708,13 @@ def main():
                     # if the super object already exists, we just need to associate the matches with it (the main object is already associated)
                     existing_associations_obj_ids = session.scalars(
                         sa.select(ObjToSuperObj.obj_id).where(
-                            ObjToSuperObj.superobj_id == super_obj.id,
+                            ObjToSuperObj.super_obj_id == super_obj.id,
                         )
                     ).all()
                     new_associated_obj_ids = associated_with - set(existing_associations_obj_ids)
                     for match_obj_id in new_associated_obj_ids:
                         match_obj_to_superobj = ObjToSuperObj(
-                            obj_id=match_obj_id, superobj_id=super_obj.id
+                            obj_id=match_obj_id, super_obj_id=super_obj.id
                         )
                         session.add(match_obj_to_superobj)
                     if new_associated_obj_ids:
