@@ -102,22 +102,24 @@ class BoomAPIClient:
         )
         return self.token
 
-    def get_cutouts_by_object_id(self, survey: str, object_id: str, retry: bool = True):
-        token = self.get_token()
-        response = requests.get(
-            f"{self.base_url}/surveys/{survey.upper()}/cutouts",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            params={"objectId": object_id},
-        )
-        # if the response is a 401, it means the token is invalid, so we refresh the token and try again once
-        if retry and response.status_code == 401:
-            log("Token expired or invalid, refreshing token")
-            self.token = None
-            self.get_token()
-            return self.get_cutouts_by_object_id(survey, object_id, retry=False)
+    def get_cutouts_by_object_id(self, survey: str, object_id: str):
+        for attempt in range(2):
+            token = self.get_token()
+            response = requests.get(
+                f"{self.base_url}/surveys/{survey.upper()}/cutouts",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                params={"objectId": object_id},
+            )
+            if response.status_code != 401:
+                break
+            # if the response is a 401, it means the token is invalid, so we refresh the token and try again once
+            if attempt == 0:
+                log("Token expired or invalid, refreshing token")
+                self.token = None
+
         response.raise_for_status()
         if "data" not in response.json():
             raise ValueError(f"Unexpected response format: {response.json()}")
