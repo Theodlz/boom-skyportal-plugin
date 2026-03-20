@@ -125,6 +125,10 @@ class BoomAPIClient:
             raise ValueError(f"Unexpected response format: {response.json()}")
         data = response.json()["data"]
         data["objectId"] = object_id
+        # API returns cutouts as base64 strings; decode to bytes for consistency with Avro records
+        for key in ("cutoutScience", "cutoutTemplate", "cutoutDifference"):
+            if key in data and isinstance(data[key], str):
+                data[key] = base64.b64decode(data[key])
         return data
 
 
