@@ -542,10 +542,6 @@ def main():
                 record["dec"],
                 session
             )
-            if obj_created:
-                add_thumbnails(record, survey, session)
-            else:
-                log(f"Object with id {obj_id} already exists")
 
             # we checked which candidates are already created
             candid = record["candid"]
@@ -627,6 +623,9 @@ def main():
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
                 continue
+
+            if obj_created:
+                add_thumbnails(record, survey, session)
 
             session.commit()
 
