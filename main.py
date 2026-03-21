@@ -536,12 +536,6 @@ def main():
         with DBSession() as session:
             obj_id = record["objectId"]
             survey = record["survey"].upper()
-            obj, obj_created = get_or_create_object(
-                obj_id,
-                record["ra"],
-                record["dec"],
-                session
-            )
 
             # we checked which candidates are already created
             candid = record["candid"]
@@ -552,6 +546,7 @@ def main():
             ).all()
             passed_filter_ids = set(passed_filter_ids)
 
+            obj = None
             created_candidates = False
             for filter_data in record["filters"]:
                 filt = boom_filters.get(filter_data["filter_id"])
@@ -572,6 +567,17 @@ def main():
                         continue
                 if filt["id"] in passed_filter_ids:
                     continue
+
+                # create the object if one filter has passed and the object has not been created yet
+                if obj is None:
+                    obj, obj_created = get_or_create_object(
+                        obj_id,
+                        record["ra"],
+                        record["dec"],
+                        session
+                    )
+                    if obj_created:
+                        add_thumbnails(record, survey, session)
 
                 # create the candidate if it has not been created yet for this filter and this candid
                 try:
@@ -622,9 +628,6 @@ def main():
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
-
-            if obj_created:
-                add_thumbnails(record, survey, session)
 
             session.commit()
 
