@@ -546,7 +546,7 @@ def main():
             ).all()
             passed_filter_ids = set(passed_filter_ids)
 
-            obj = None
+            obj = session.scalar(sa.select(Obj).where(Obj.id == obj_id))
             created_candidates = False
             for filter_data in record["filters"]:
                 filt = boom_filters.get(filter_data["filter_id"])
@@ -625,6 +625,9 @@ def main():
                             log(f"Updated annotation with origin {origin}")
                 except Exception as e:
                     log(f"Error processing annotation for object {obj_id} and filter {filt['id']}: {e}")
+
+            if obj is None:
+                continue
 
             if not created_candidates:
                 log(f"No new candidates created for object {obj_id} with candid {candid}")
