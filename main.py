@@ -665,17 +665,15 @@ def main():
                         session,
                     )
 
-                    # TODO: grab the cutouts for the match object (if newly added) from the BOOM API
-                    if match_obj_created:
-                        try:
-                            cutouts = boom_client.get_cutouts_by_object_id(
-                                match_survey, match_obj_id
-                            )
-                            add_thumbnails(cutouts, match_survey, session)
-                        except Exception as e:
-                            log(
-                                f"Failed to get cutouts for match object {match_obj_id} from survey {match_survey}: {e}"
-                            )
+                    try:
+                        cutouts = boom_client.get_cutouts_by_object_id(
+                            match_survey, match_obj_id
+                        )
+                        add_thumbnails(cutouts, match_survey, session)
+                    except Exception as e:
+                        log(
+                            f"Failed to get cutouts for match object {match_obj_id} from survey {match_survey}: {e}"
+                        )
 
                     ingest_photometry_array(
                         match["photometry"],
