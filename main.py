@@ -21,6 +21,7 @@ from astropy.visualization import (
 from confluent_kafka import Consumer, KafkaError
 from scipy.ndimage import rotate
 from sqlalchemy.orm.session import Session
+from sqlalchemy.exc import IntegrityError
 
 from baselayer.app.env import load_env
 from baselayer.app.models import init_db
@@ -537,14 +538,23 @@ def main():
             obj_id = record["objectId"]
             survey = record["survey"].upper()
 
-            # we checked which candidates are already created
+            # we consider that a candidate already exists if:
+            # - there is an entry with the same candid (passing_alert_id) and filter_id, or
+            # - there is an entry with the same obj_id, passed_at, and filter_id (DB has a unique index on these 3 fields)
             candid = record["candid"]
-            passed_filter_ids = session.scalars(
+            passed_at_by_filter_id = {f["filter_id"]: datetime.fromtimestamp(f["passed_at"] / 1000, timezone.utc) for f in record["filters"]}
+            existing_candidates = session.scalars(
                 sa.select(
-                    Candidate.filter_id,
-                ).where(Candidate.passing_alert_id == candid)
+                    Candidate,
+                ).where(Candidate.obj_id == obj_id, Candidate.filter_id.in_(passed_at_by_filter_id.keys()))
             ).all()
-            passed_filter_ids = set(passed_filter_ids)
+            passed_filter_ids = set()
+            for candidate in existing_candidates:
+                passed_at = passed_at_by_filter_id.get(candidate.filter_id)
+                if candidate.passing_alert_id == candid:
+                    passed_filter_ids.add(candidate.filter_id)
+                elif passed_at and candidate.passed_at == passed_at:
+                    passed_filter_ids.add(candidate.filter_id)
 
             obj = None
             created_candidates = False
@@ -585,14 +595,14 @@ def main():
                         candidate = Candidate(
                             obj=obj,
                             filter_id=filt["id"],
-                            # convert passed_at from a timestamp in milliseconds to a datetime object
-                            passed_at=datetime.fromtimestamp(
-                                filter_data["passed_at"] / 1000, timezone.utc
-                            ),
+                            passed_at=passed_at_by_filter_id[filt["id"]],
                             passing_alert_id=candid,
                             uploader_id=1
                         )
                         session.add(candidate)
+                except IntegrityError as e:
+                    log(f"IntegrityError: Duplicate candidate for obj_id {obj_id}, filter {filt['id']}: {e}")
+                    continue
                 except Exception as e:
                     log(f"Error creating candidate with candid {candid} and filter {filt['id']}: {e}")
                     continue # If the candidate is not created successfully, we skip the annotation creation
