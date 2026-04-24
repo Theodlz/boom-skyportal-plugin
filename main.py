@@ -543,10 +543,16 @@ def main():
             # - there is an entry with the same obj_id, passed_at, and filter_id (DB has a unique index on these 3 fields)
             candid = record["candid"]
             passed_at_by_filter_id = {f["filter_id"]: datetime.fromtimestamp(f["passed_at"] / 1000, timezone.utc) for f in record["filters"]}
+            existing_fids = set()
+            for filter_id in passed_at_by_filter_id:
+                fid = boom_filters.get(filter_id, {}).get("id")
+                if fid is not None:
+                    existing_fids.add(fid)
+
             existing_candidates = session.scalars(
                 sa.select(
                     Candidate,
-                ).where(Candidate.obj_id == obj_id, Candidate.filter_id.in_(passed_at_by_filter_id.keys()))
+                ).where(Candidate.obj_id == obj_id, Candidate.filter_id.in_(existing_fids))
             ).all()
             passed_filter_ids = set()
             for candidate in existing_candidates:
