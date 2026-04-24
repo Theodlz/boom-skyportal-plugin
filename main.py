@@ -637,7 +637,7 @@ def main():
                     log(f"Error processing annotation for object {obj_id} and filter {filt['id']}: {e}")
 
             if not created_candidates:
-                log(f"No new candidates created for object {obj_id} with candid {candid}")
+                # log(f"No new candidates created for object {obj_id} with candid {candid}")
                 continue
 
             session.commit()
