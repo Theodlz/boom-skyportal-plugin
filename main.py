@@ -601,7 +601,7 @@ def main():
                         candidate = Candidate(
                             obj=obj,
                             filter_id=filt["id"],
-                            passed_at=passed_at_by_filter_id[filt["id"]],
+                            passed_at=passed_at_by_filter_id[filter_data["filter_id"]],
                             passing_alert_id=candid,
                             uploader_id=1
                         )
